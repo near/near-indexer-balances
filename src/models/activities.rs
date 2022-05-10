@@ -16,15 +16,13 @@ pub struct Activity {
     pub involved_account_id: String, // action_receipt_actions
     pub direction: String, // action_receipt_actions
 
-    pub from_delta_amount: BigDecimal, // account_changes + RPC/cache
-    pub to_delta_amount: BigDecimal, // account_changes + RPC/cache
-    pub from_absolute_amount: BigDecimal, // account_changes
-    pub to_absolute_amount: BigDecimal, // account_changes
+    pub affected_delta_amount: BigDecimal, // account_changes + RPC/cache
+    pub affected_absolute_amount: BigDecimal, // account_changes
 
     pub execution_status: String, // execution_outcomes
 
     // I suggest to collect both and then maybe drop one of them
-    // in the example, it was "actions_json". Are you sure we can collapse it to one line?
+    // in the example, it was "actions_json". Are we sure we can collapse it to one line?
     pub reason: String, // account_changes
     pub action_kind: String, // action_receipt_actions
 
