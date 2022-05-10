@@ -18,13 +18,8 @@ use crate::models::blocks::Block;
 use crate::models::chunks::Chunk;
 pub(crate) use serializers::extract_action_type_and_value_from_action_view;
 
-pub(crate) mod account_changes;
-pub(crate) mod blocks;
-pub(crate) mod chunks;
-pub(crate) mod execution_outcomes;
-pub(crate) mod receipts;
 mod serializers;
-pub(crate) mod transactions;
+pub(crate) mod activities;
 
 pub trait FieldCount {
     /// Get the number of fields on a struct.
@@ -222,48 +217,6 @@ pub fn create_placeholder(
     }
     item += ")";
     Ok(item)
-}
-
-pub(crate) async fn start_after_interruption(
-    pool: &sqlx::Pool<sqlx::Postgres>,
-) -> anyhow::Result<u64> {
-    let query = "SELECT block_timestamp
-                        FROM blocks
-                        ORDER BY block_timestamp desc
-                        LIMIT 1";
-
-    let res = select_retry_or_panic(pool, query, &[], 10).await?;
-    let timestamp: BigDecimal = res
-        .first()
-        .map(|value| value.get(0))
-        .unwrap_or_else(BigDecimal::zero);
-
-    try_join!(
-        delete_retry_or_panic::<AccountChange>(pool, &timestamp, 10),
-        delete_retry_or_panic::<Block>(pool, &timestamp, 10),
-        delete_retry_or_panic::<Chunk>(pool, &timestamp, 10),
-        delete_retry_or_panic::<ExecutionOutcome>(pool, &timestamp, 10),
-        delete_retry_or_panic::<ExecutionOutcomeReceipt>(pool, &timestamp, 10),
-        delete_retry_or_panic::<ActionReceipt>(pool, &timestamp, 10),
-        delete_retry_or_panic::<DataReceipt>(pool, &timestamp, 10),
-        delete_retry_or_panic::<ActionReceiptAction>(pool, &timestamp, 10),
-        delete_retry_or_panic::<ActionReceiptsOutput>(pool, &timestamp, 10),
-        delete_retry_or_panic::<Transaction>(pool, &timestamp, 10)
-    )?;
-
-    let query = "SELECT block_height
-                        FROM blocks
-                        ORDER BY block_timestamp desc
-                        LIMIT 1";
-
-    let res = select_retry_or_panic(pool, query, &[], 10).await?;
-    let height: u64 = res
-        .first()
-        .map(|value| value.get(0))
-        .unwrap_or_else(BigDecimal::zero)
-        .to_u64()
-        .expect("height should be positive");
-    Ok(height + 1)
 }
 
 pub(crate) trait PrintEnum {
