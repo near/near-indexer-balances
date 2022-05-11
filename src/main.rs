@@ -45,8 +45,8 @@ async fn main() -> anyhow::Result<()> {
         .port(env::var("DB_PORT")?.parse()?)
         .username(&env::var("DB_USER")?)
         .password(&env::var("DB_PASSWORD")?)
-        .database(&env::var("DB_NAME")?)
-        .extra_float_digits(2);
+        .database(&env::var("DB_NAME")?);
+        // .extra_float_digits(2);
 
     let pool = sqlx::PgPool::connect_with(options).await?;
     // let pool = sqlx::PgPool::connect(&env::var("DATABASE_URL")?).await?;
