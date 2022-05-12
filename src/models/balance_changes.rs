@@ -6,7 +6,7 @@ use sqlx::Arguments;
 use crate::models::FieldCount;
 
 #[derive(Debug, sqlx::FromRow, FieldCount)]
-pub struct Activity {
+pub struct BalanceChange {
     pub block_timestamp: BigDecimal, // blocks
     pub receipt_id: Option<String>, // receipts/action_receipt_actions
     pub transaction_hash: Option<String>, // account_changes
@@ -16,8 +16,10 @@ pub struct Activity {
     pub involved_account_id: String, // action_receipt_actions
     pub direction: String, // action_receipt_actions
 
-    pub affected_delta_amount: BigDecimal, // account_changes + RPC/cache
-    pub affected_absolute_amount: BigDecimal, // account_changes
+    pub delta_liquid_amount: BigDecimal, // account_changes + RPC/cache
+    pub absolute_liquid_amount: BigDecimal, // account_changes
+    pub delta_locked_amount: BigDecimal, // account_changes + RPC/cache
+    pub absolute_locked_amount: BigDecimal, // account_changes
 
     // We definitely want to add the ordering, and, with the understanding of the future interfaces,
     // it should look like that
@@ -40,3 +42,33 @@ pub struct Activity {
     // pub gas_burnt: BigDecimal, // execution_outcomes
     // pub tokens_burnt: BigDecimal, // execution_outcomes
 }
+
+impl crate::models::SqlxMethods for BalanceChange {
+    fn add_to_args(&self, args: &mut sqlx::postgres::PgArguments) {
+        args.add(&self.block_timestamp);
+        args.add(&self.receipt_id);
+        args.add(&self.transaction_hash);
+        args.add(&self.affected_account_id);
+        args.add(&self.involved_account_id);
+        args.add(&self.direction);
+        args.add(&self.delta_liquid_amount);
+        args.add(&self.absolute_liquid_amount);
+        args.add(&self.delta_locked_amount);
+        args.add(&self.absolute_locked_amount);
+        args.add(&self.shard_id);
+        args.add(&self.index_in_chunk);
+    }
+
+    fn insert_query(count: usize) -> anyhow::Result<String> {
+        crate::models::create_query_with_placeholders(
+            "INSERT INTO balance_changes VALUES",
+            count,
+            BalanceChange::field_count(),
+        )
+    }
+
+    fn name() -> String {
+        "balance_changes".to_string()
+    }
+}
+

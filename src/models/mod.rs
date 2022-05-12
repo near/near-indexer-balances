@@ -8,35 +8,26 @@ use futures::try_join;
 use num_traits::{ToPrimitive, Zero};
 use sqlx::{Arguments, Row};
 
-pub use account_changes::AccountChange;
-pub use execution_outcomes::{ExecutionOutcome, ExecutionOutcomeReceipt};
-pub use near_lake_flows_into_sql::FieldCount;
-pub use receipts::{ActionReceipt, ActionReceiptAction, ActionReceiptsOutput, DataReceipt};
-pub use transactions::Transaction;
-
-use crate::models::blocks::Block;
-use crate::models::chunks::Chunk;
-pub(crate) use serializers::extract_action_type_and_value_from_action_view;
+pub(crate) use activities_indexer::FieldCount;
+// pub(crate) use serializers::extract_action_type_and_value_from_action_view;
 
 mod serializers;
-pub(crate) mod activities;
+pub(crate) mod balance_changes;
 
 pub trait FieldCount {
     /// Get the number of fields on a struct.
     fn field_count() -> usize;
 }
 
-pub trait MySqlMethods {
+pub trait SqlxMethods {
     fn add_to_args(&self, args: &mut sqlx::postgres::PgArguments);
 
     fn insert_query(count: usize) -> anyhow::Result<String>;
 
-    fn delete_query() -> String;
-
     fn name() -> String;
 }
 
-pub async fn chunked_insert<T: MySqlMethods + std::fmt::Debug>(
+pub async fn chunked_insert<T: SqlxMethods + std::fmt::Debug>(
     pool: &sqlx::Pool<sqlx::Postgres>,
     items: &[T],
     retry_count: usize,
@@ -47,7 +38,7 @@ pub async fn chunked_insert<T: MySqlMethods + std::fmt::Debug>(
     try_join_all(futures).await.map(|_| ())
 }
 
-async fn insert_retry_or_panic<T: MySqlMethods + std::fmt::Debug>(
+async fn insert_retry_or_panic<T: SqlxMethods + std::fmt::Debug>(
     pool: &sqlx::Pool<sqlx::Postgres>,
     items: &[T],
     retry_count: usize,
@@ -134,45 +125,21 @@ pub async fn select_retry_or_panic(
     }
 }
 
-async fn delete_retry_or_panic<T: MySqlMethods + std::fmt::Debug>(
+pub(crate) async fn start_after_interruption(
     pool: &sqlx::Pool<sqlx::Postgres>,
-    timestamp: &BigDecimal,
-    retry_count: usize,
-) -> anyhow::Result<()> {
-    let mut interval = crate::INTERVAL;
-    let mut retry_attempt = 0usize;
-    let query = T::delete_query();
+) -> anyhow::Result<u64> {
+    let query = "SELECT block_height
+                        FROM blocks
+                        ORDER BY block_timestamp desc
+                        LIMIT 1";
 
-    loop {
-        if retry_attempt == retry_count {
-            return Err(anyhow::anyhow!(
-                "Failed to perform query to database after {} attempts. Stop trying.",
-                retry_count
-            ));
-        }
-        retry_attempt += 1;
-
-        let mut args = sqlx::postgres::PgArguments::default();
-        args.add(timestamp);
-
-        match sqlx::query_with(&query, args).execute(pool).await {
-            Ok(_) => break,
-            Err(async_error) => {
-                tracing::error!(
-                         target: crate::INDEXER,
-                         "Error occurred during {}:\n could not clean up {}. \n Retrying in {} milliseconds...",
-                         async_error,
-                         &T::name(),
-                         interval.as_millis(),
-                     );
-                tokio::time::sleep(interval).await;
-                if interval < crate::MAX_DELAY_TIME {
-                    interval *= 2;
-                }
-            }
-        }
-    }
-    Ok(())
+    let res = select_retry_or_panic(pool, query, &[], 10).await?;
+    Ok(res
+        .first()
+        .map(|value| value.get(0))
+        .unwrap_or_else(BigDecimal::zero)
+        .to_u64()
+        .expect("height should be positive"))
 }
 
 fn create_query_with_placeholders(

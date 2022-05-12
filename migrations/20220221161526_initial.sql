@@ -3,18 +3,20 @@ CREATE TYPE direction AS ENUM (
     'ACTION_TO_AFFECTED_ACCOUNT'
 );
 
-CREATE TABLE activities
+CREATE TABLE balance_changes
 (
-    block_timestamp          numeric(20, 0) NOT NULL,
-    receipt_id               text,
-    transaction_hash         text,
-    affected_account_id      text           NOT NULL,
-    involved_account_id      text           NOT NULL,
-    direction                text           NOT NULL,
-    affected_delta_amount    numeric(45, 0) NOT NULL,
-    affected_absolute_amount numeric(45, 0) NOT NULL,
-    shard_id                 integer        NOT NULL,
-    index_in_chunk           integer        NOT NULL,
+    block_timestamp        numeric(20, 0) NOT NULL,
+    receipt_id             text,
+    transaction_hash       text,
+    affected_account_id    text           NOT NULL,
+    involved_account_id    text           NOT NULL,
+    direction              text           NOT NULL,
+    delta_liquid_amount    numeric(45, 0) NOT NULL,
+    absolute_liquid_amount numeric(45, 0) NOT NULL,
+    delta_locked_amount    numeric(45, 0) NOT NULL,
+    absolute_locked_amount numeric(45, 0) NOT NULL,
+    shard_id               integer        NOT NULL,
+    index_in_chunk         integer        NOT NULL,
     PRIMARY KEY (block_timestamp, shard_id, index_in_chunk)
 );
 

@@ -1,13 +1,10 @@
-// TODO cleanup imports in all the files in the end
+// // TODO cleanup imports in all the files in the end
 use cached::SizedCache;
 use clap::Parser;
-use dotenv::dotenv;
 use futures::{try_join, StreamExt};
-use std::env;
+
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
-
-use crate::configs::Opts;
 
 mod configs;
 mod db_adapters;
@@ -20,37 +17,20 @@ pub(crate) const INDEXER: &str = "indexer";
 const INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const MAX_DELAY_TIME: std::time::Duration = std::time::Duration::from_secs(120);
 
-#[derive(Clone, Hash, PartialEq, Eq, Debug)]
-pub enum ReceiptOrDataId {
-    ReceiptId(near_indexer_primitives::CryptoHash),
-    DataId(near_indexer_primitives::CryptoHash),
-}
-// Creating type aliases to make HashMap types for cache more explicit
-pub type ParentTransactionHashString = String;
+pub type Balances =  (near_indexer_primitives::types::Balance, near_indexer_primitives::types::Balance);
 // Introducing a simple cache for Receipts to find their parent Transactions without
 // touching the database
 // The key is ReceiptID
 // The value is TransactionHash (the very parent of the Receipt)
-pub type ReceiptsCache =
-    std::sync::Arc<Mutex<SizedCache<ReceiptOrDataId, ParentTransactionHashString>>>;
+pub type BalancesCache =
+    std::sync::Arc<Mutex<SizedCache<near_indexer_primitives::types::AccountId, Balances>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenv().ok();
+    dotenv::dotenv().ok();
 
-    let opts: Opts = Opts::parse();
-
-    let options = sqlx::postgres::PgConnectOptions::new()
-        .host(&env::var("DB_HOST")?)
-        .port(env::var("DB_PORT")?.parse()?)
-        .username(&env::var("DB_USER")?)
-        .password(&env::var("DB_PASSWORD")?)
-        .database(&env::var("DB_NAME")?);
-        // .extra_float_digits(2);
-
-    let pool = sqlx::PgPool::connect_with(options).await?;
-    // let pool = sqlx::PgPool::connect(&env::var("DATABASE_URL")?).await?;
-    // let pool = sqlx::PgPool::connect(&env::var("DATABASE_URL")?).await?;
+    let opts = crate::configs::Opts::parse();
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
     // TODO Error: while executing migrations: error returned from database: 1128 (HY000): Function 'near_indexer.GET_LOCK' is not defined
     // sqlx::migrate!().run(&pool).await?;
 
@@ -68,12 +48,8 @@ async fn main() -> anyhow::Result<()> {
 
     let stream = near_lake_framework::streamer(config);
 
-    // We want to prevent unnecessary SELECT queries to the database to find
-    // the Transaction hash for the Receipt.
-    // Later we need to find the Receipt which is a parent to underlying Receipts.
-    // Receipt ID will of the child will be stored as key and parent Transaction hash/Receipt ID
-    // will be stored as a value
-    let receipts_cache: ReceiptsCache =
+    // We want to prevent unnecessary RPC queries to find previous balance
+    let balances_cache: BalancesCache =
         std::sync::Arc::new(Mutex::new(SizedCache::with_size(100_000)));
 
     let mut handlers = tokio_stream::wrappers::ReceiverStream::new(stream)
@@ -81,11 +57,10 @@ async fn main() -> anyhow::Result<()> {
             handle_streamer_message(
                 streamer_message,
                 &pool,
-                std::sync::Arc::clone(&receipts_cache),
-                !opts.non_strict_mode,
+                std::sync::Arc::clone(&balances_cache),
             )
         })
-        .buffer_unordered(100usize);
+        .buffer_unordered(1usize);
 
     let mut time_now = std::time::Instant::now();
     while let Some(handle_message) = handlers.next().await {
@@ -108,62 +83,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn handle_streamer_message(
-    streamer_message: near_lake_framework::near_indexer_primitives::StreamerMessage,
+    streamer_message: near_indexer_primitives::StreamerMessage,
     pool: &sqlx::Pool<sqlx::Postgres>,
-    receipts_cache: ReceiptsCache,
-    strict_mode: bool,
+    balances_cache: BalancesCache,
 ) -> anyhow::Result<u64> {
-    eprintln!(
-        "{} / shards {}",
-        streamer_message.block.header.height,
-        streamer_message.shards.len()
-    );
 
-    let blocks_future = db_adapters::blocks::store_block(pool, &streamer_message.block);
+    db_adapters::activities::store_activities(pool, &streamer_message.shards,
+                                                                      &streamer_message.block.header, std::sync::Arc::clone(&balances_cache)).await?;
 
-    let chunks_future = db_adapters::chunks::store_chunks(
-        pool,
-        &streamer_message.shards,
-        &streamer_message.block.header.hash,
-        streamer_message.block.header.timestamp,
-    );
-
-    let transactions_future = db_adapters::transactions::store_transactions(
-        pool,
-        &streamer_message.shards,
-        &streamer_message.block.header.hash,
-        streamer_message.block.header.timestamp,
-        std::sync::Arc::clone(&receipts_cache),
-    );
-
-    let receipts_future = db_adapters::receipts::store_receipts(
-        pool,
-        strict_mode,
-        &streamer_message.shards,
-        &streamer_message.block.header.hash,
-        streamer_message.block.header.timestamp,
-        streamer_message.block.header.height,
-        std::sync::Arc::clone(&receipts_cache),
-    );
-
-    let execution_outcomes_future = db_adapters::execution_outcomes::store_execution_outcomes(
-        pool,
-        &streamer_message.shards,
-        &streamer_message.block.header.hash,
-        streamer_message.block.header.timestamp,
-        std::sync::Arc::clone(&receipts_cache),
-    );
-
-    let account_changes_future = db_adapters::account_changes::store_account_changes(
-        pool,
-        &streamer_message.shards,
-        &streamer_message.block.header.hash,
-        streamer_message.block.header.timestamp,
-    );
-
-    try_join!(blocks_future, chunks_future, transactions_future)?;
-    try_join!(receipts_future)?; // this guy can contain local receipts, so we have to do that after transactions_future finished the work
-    try_join!(execution_outcomes_future, account_changes_future)?; // this guy thinks that receipts_future finished, and clears the cache
     Ok(streamer_message.block.header.height)
 }
 
