@@ -90,7 +90,7 @@ async fn handle_streamer_message(
     pool: &sqlx::Pool<sqlx::Postgres>,
     balances_cache: BalancesCache,
 ) -> anyhow::Result<u64> {
-    db_adapters::activities::store_activities(
+    db_adapters::balance_changes::store_balance_changes(
         pool,
         &streamer_message.shards,
         &streamer_message.block.header,

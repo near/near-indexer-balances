@@ -11,7 +11,7 @@ use futures::SinkExt;
 use near_indexer_primitives::views::StateChangeCauseView;
 use near_indexer_primitives::IndexerTransactionWithOutcome;
 
-pub(crate) async fn store_activities(
+pub(crate) async fn store_balance_changes(
     pool: &sqlx::Pool<sqlx::Postgres>,
     shards: &[near_indexer_primitives::IndexerShard],
     block_header: &near_indexer_primitives::views::BlockHeaderView,
@@ -110,7 +110,7 @@ async fn store_validator_accounts_update_for_chunk(
                     transaction_hash: None,
                     affected_account_id: account_id,
                     involved_account_id: None,
-                    direction: "".to_string(),
+                    direction: "NONE".to_string(),
                     cause: cause.print().to_string(),
                     delta_liquid_amount: BigDecimal::from_str(&delta_liquid_amount.to_string())
                         .unwrap(),

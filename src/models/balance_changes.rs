@@ -50,6 +50,7 @@ impl crate::models::SqlxMethods for BalanceChange {
         args.add(&self.affected_account_id);
         args.add(&self.involved_account_id);
         args.add(&self.direction);
+        args.add(&self.cause);
         args.add(&self.delta_liquid_amount);
         args.add(&self.absolute_liquid_amount);
         args.add(&self.delta_locked_amount);
