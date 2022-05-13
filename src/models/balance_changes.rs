@@ -11,10 +11,10 @@ pub struct BalanceChange {
     pub receipt_id: Option<String>,       // receipts/action_receipt_actions
     pub transaction_hash: Option<String>, // account_changes
     // do we want to additionally store originated_from_transaction_hash?
-    pub affected_account_id: String, // action_receipt_actions
-    pub involved_account_id: String, // action_receipt_actions
-    pub direction: String,           // action_receipt_actions
-
+    pub affected_account_id: String,         // action_receipt_actions
+    pub involved_account_id: Option<String>, // action_receipt_actions
+    pub direction: String,                   // action_receipt_actions
+    pub cause: String,
     pub delta_liquid_amount: BigDecimal, // account_changes + RPC/cache
     pub absolute_liquid_amount: BigDecimal, // account_changes
     pub delta_locked_amount: BigDecimal, // account_changes + RPC/cache
