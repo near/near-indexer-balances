@@ -11,8 +11,8 @@ use sqlx::{Arguments, Row};
 pub(crate) use activities_indexer::FieldCount;
 // pub(crate) use serializers::extract_action_type_and_value_from_action_view;
 
-mod serializers;
 pub(crate) mod balance_changes;
+mod serializers;
 
 pub trait FieldCount {
     /// Get the number of fields on a struct.

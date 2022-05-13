@@ -1,14 +1,12 @@
+use crate::{models, Balances};
 use cached::Cached;
-use crate::{Balances, models};
 
+use crate::models::balance_changes::BalanceChange;
 use anyhow::Context;
 use futures::future::try_join_all;
 use futures::SinkExt;
-use near_indexer_primitives::views::{ReceiptView, StateChangeCauseView};
 use near_client::{Query, ViewClientActor};
-use syn::punctuated::Pair;
-use crate::models::balance_changes::BalanceChange;
-
+use near_indexer_primitives::views::{ReceiptView, StateChangeCauseView};
 
 pub(crate) async fn store_activities(
     pool: &sqlx::Pool<sqlx::Postgres>,
@@ -63,7 +61,7 @@ async fn store_activities_for_chunk(
                 near_indexer_primitives::views::StateChangeValueView::AccountUpdate {
                     account_id,
                     account,
-                } => (account_id.to_string(), Some(&account)),
+                } => (account_id.to_string(), Some(account)),
                 near_indexer_primitives::views::StateChangeValueView::AccountDeletion {
                     account_id,
                 } => (account_id.to_string(), None),
@@ -97,8 +95,6 @@ async fn store_activities_for_chunk(
             absolute_locked_amount: Default::default(),
             shard_id: 0,
             index_in_chunk: 0,
-
-
             // account_id,
             // block_timestamp: changed_in_block_timestamp.into(),
             // block_hash: changed_in_block_hash.to_string(),
@@ -139,7 +135,6 @@ async fn store_activities_for_chunk(
 
     models::chunked_insert(pool, &result, 10).await?;
 
-
     // models::chunked_insert(
     //     pool,
     //     &state_changes
@@ -163,7 +158,6 @@ async fn store_activities_for_chunk(
     //     10,
     // )
     //     .await?;
-
 
     // let action_receipt_actions: Vec<
     //     near_indexer_primitives::views::ReceiptView
@@ -201,16 +195,23 @@ async fn store_activities_for_chunk(
     Ok(())
 }
 
-async fn get_previous_balance(account_id: &near_indexer_primitives::types::AccountId, balances_cache: crate::BalancesCache, view_client: &actix::Addr<ViewClientActor>, prev_block_height: u64) -> anyhow::Result<Balances> {
+async fn get_previous_balance(
+    account_id: &near_indexer_primitives::types::AccountId,
+    balances_cache: crate::BalancesCache,
+    view_client: &actix::Addr<ViewClientActor>,
+    prev_block_height: u64,
+) -> anyhow::Result<Balances> {
     let mut balances_cache_lock = balances_cache.lock().await;
     let prev_balances = match balances_cache_lock.cache_get(account_id) {
         None => {
-            let account_view = get_account_view_for_block_height(view_client, account_id, &prev_block_height).await?;
+            let account_view =
+                get_account_view_for_block_height(view_client, account_id, &prev_block_height)
+                    .await?;
             let balances = (account_view.amount, account_view.locked);
             balances_cache_lock.cache_set(account_id.clone(), balances);
             balances
         }
-        Some(balances) => balances.clone()
+        Some(balances) => *balances,
     };
     drop(balances_cache_lock);
     Ok(prev_balances)

@@ -1,5 +1,14 @@
 ### How to collect the data
 
+https://github.com/near/nearcore
+runtime/runtime/src/lib.rs:1160
+
+1. validators account update
+2. process transactions
+3. process receipts
+
+
+
 Merge `account_changes` and `action_receipt_actions` by `receipt_id`.
 
 We have the natural order in these 2 arrays.

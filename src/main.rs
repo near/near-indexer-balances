@@ -17,7 +17,10 @@ pub(crate) const INDEXER: &str = "indexer";
 const INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const MAX_DELAY_TIME: std::time::Duration = std::time::Duration::from_secs(120);
 
-pub type Balances =  (near_indexer_primitives::types::Balance, near_indexer_primitives::types::Balance);
+pub type Balances = (
+    near_indexer_primitives::types::Balance,
+    near_indexer_primitives::types::Balance,
+);
 // Introducing a simple cache for Receipts to find their parent Transactions without
 // touching the database
 // The key is ReceiptID
@@ -87,9 +90,13 @@ async fn handle_streamer_message(
     pool: &sqlx::Pool<sqlx::Postgres>,
     balances_cache: BalancesCache,
 ) -> anyhow::Result<u64> {
-
-    db_adapters::activities::store_activities(pool, &streamer_message.shards,
-                                                                      &streamer_message.block.header, std::sync::Arc::clone(&balances_cache)).await?;
+    db_adapters::activities::store_activities(
+        pool,
+        &streamer_message.shards,
+        &streamer_message.block.header,
+        std::sync::Arc::clone(&balances_cache),
+    )
+    .await?;
 
     Ok(streamer_message.block.header.height)
 }
