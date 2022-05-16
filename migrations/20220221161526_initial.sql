@@ -1,7 +1,6 @@
 CREATE TYPE direction AS ENUM (
     'ACTION_FROM_AFFECTED_ACCOUNT',
     'ACTION_TO_AFFECTED_ACCOUNT',
-    'NONE'
 );
 
 CREATE TABLE balance_changes

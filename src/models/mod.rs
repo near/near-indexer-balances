@@ -4,7 +4,6 @@ use near_indexer_primitives::views::{
     AccessKeyPermissionView, ExecutionStatusView, StateChangeCauseView,
 };
 
-use futures::try_join;
 use num_traits::{ToPrimitive, Zero};
 use sqlx::{Arguments, Row};
 

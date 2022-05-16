@@ -1,7 +1,7 @@
 // // TODO cleanup imports in all the files in the end
 use cached::SizedCache;
 use clap::Parser;
-use futures::{try_join, StreamExt};
+use futures::StreamExt;
 
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
