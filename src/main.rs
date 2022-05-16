@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let config = near_lake_framework::LakeConfig {
         s3_bucket_name: opts.s3_bucket_name.clone(),
         s3_region_name: opts.s3_region_name.clone(),
-        start_block_height,
+        start_block_height: 9823032, //9820210,
         s3_config: None,
     };
     init_tracing();

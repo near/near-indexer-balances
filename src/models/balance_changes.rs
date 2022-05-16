@@ -60,11 +60,11 @@ impl crate::models::SqlxMethods for BalanceChange {
     }
 
     fn insert_query(count: usize) -> anyhow::Result<String> {
-        crate::models::create_query_with_placeholders(
+        Ok(crate::models::create_query_with_placeholders(
             "INSERT INTO balance_changes VALUES",
             count,
             BalanceChange::field_count(),
-        )
+        )? + "ON CONFLICT DO NOTHING")
     }
 
     fn name() -> String {
