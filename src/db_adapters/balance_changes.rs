@@ -1,4 +1,3 @@
-use crate::{models, Balances};
 use cached::Cached;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -6,7 +5,6 @@ use std::str::FromStr;
 use crate::models::balance_changes::BalanceChange;
 use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
-use near_indexer_primitives::types::AccountId;
 use near_indexer_primitives::views::StateChangeCauseView;
 use near_jsonrpc_client::errors::JsonRpcError;
 use near_jsonrpc_primitives::types::query::RpcQueryError;
@@ -19,38 +17,42 @@ pub(crate) async fn store_balance_changes(
     pool: &sqlx::Pool<sqlx::Postgres>,
     shards: &[near_indexer_primitives::IndexerShard],
     block_header: &near_indexer_primitives::views::BlockHeaderView,
-    balances_cache: crate::BalancesCache,
+    balances_cache: &crate::BalanceCache,
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<()> {
-    let futures = shards
-        .iter()
-        .map(|shard| store_changes_for_chunk(pool, shard, block_header, balances_cache.clone()));
+    let futures = shards.iter().map(|shard| {
+        store_changes_for_chunk(pool, shard, block_header, balances_cache, json_rpc_client)
+    });
 
     try_join_all(futures).await.map(|_| ())
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct AccountChangesBalances {
-    pub validators: Vec<(AccountId, Balances)>,
-    pub transactions: HashMap<near_indexer_primitives::CryptoHash, (AccountId, Balances)>,
-    pub receipts: HashMap<near_indexer_primitives::CryptoHash, (AccountId, Balances)>,
-    pub rewards: HashMap<near_indexer_primitives::CryptoHash, (AccountId, Balances)>,
+    pub validators: Vec<crate::AccountWithBalance>,
+    pub transactions: HashMap<near_indexer_primitives::CryptoHash, crate::AccountWithBalance>,
+    pub receipts: HashMap<near_indexer_primitives::CryptoHash, crate::AccountWithBalance>,
+    pub rewards: HashMap<near_indexer_primitives::CryptoHash, crate::AccountWithBalance>,
 }
 
 async fn store_changes_for_chunk(
     pool: &sqlx::Pool<sqlx::Postgres>,
     shard: &near_indexer_primitives::IndexerShard,
     block_header: &near_indexer_primitives::views::BlockHeaderView,
-    balances_cache: crate::BalancesCache,
+    balances_cache: &crate::BalanceCache,
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<()> {
     let mut changes: Vec<BalanceChange> = vec![];
-    let mut changes_data = collect_data_from_balance_changes(&shard.state_changes);
+    let mut changes_data =
+        collect_data_from_balance_changes(&shard.state_changes, block_header.height)?;
     // We should collect these 3 groups sequentially because they all share the same cache
     changes.extend(
         store_validator_accounts_update_for_chunk(
             &changes_data.validators,
             block_header,
             shard.shard_id,
-            balances_cache.clone(),
+            balances_cache,
+            json_rpc_client,
         )
         .await?,
     );
@@ -62,7 +64,8 @@ async fn store_changes_for_chunk(
                 &mut changes_data.transactions,
                 block_header,
                 shard.shard_id,
-                balances_cache.clone(),
+                balances_cache,
+                json_rpc_client,
             )
             .await?,
         ),
@@ -75,7 +78,8 @@ async fn store_changes_for_chunk(
             &mut changes_data.rewards,
             block_header,
             shard.shard_id,
-            balances_cache.clone(),
+            balances_cache,
+            json_rpc_client,
         )
         .await?,
     );
@@ -83,27 +87,40 @@ async fn store_changes_for_chunk(
     changes.iter_mut().enumerate().for_each(|(i, mut change)| {
         change.index_in_chunk = i as i32;
     });
-    models::chunked_insert(pool, &changes, 10).await?;
+    crate::models::chunked_insert(pool, &changes, 10).await?;
     Ok(())
 }
 
 fn collect_data_from_balance_changes(
     state_changes: &near_indexer_primitives::views::StateChangesView,
-) -> AccountChangesBalances {
+    block_height: u64,
+) -> anyhow::Result<AccountChangesBalances> {
     let mut result: AccountChangesBalances = Default::default();
 
     for state_change_with_cause in state_changes {
         let near_indexer_primitives::views::StateChangeWithCauseView { cause, value } =
             state_change_with_cause;
 
-        let (account_id, balances): (AccountId, Balances) = match value {
+        let account_details = match value {
             near_indexer_primitives::views::StateChangeValueView::AccountUpdate {
                 account_id,
                 account,
-            } => (account_id.clone(), (account.amount, account.locked)),
+            } => crate::AccountWithBalance {
+                account_id: account_id.clone(),
+                balance: crate::BalanceDetails {
+                    non_staked: account.amount,
+                    staked: account.locked,
+                },
+            },
             near_indexer_primitives::views::StateChangeValueView::AccountDeletion {
                 account_id,
-            } => (account_id.clone(), (0, 0)),
+            } => crate::AccountWithBalance {
+                account_id: account_id.clone(),
+                balance: crate::BalanceDetails {
+                    non_staked: 0,
+                    staked: 0,
+                },
+            },
             // other values do not provide balance changes
             _ => continue,
         };
@@ -115,16 +132,23 @@ fn collect_data_from_balance_changes(
             | StateChangeCauseView::UpdatedDelayedReceipts
             | StateChangeCauseView::PostponedReceipt { .. }
             | StateChangeCauseView::Resharding => {
-                panic!("We never met that before. It's better to investigate that");
+                anyhow::bail!("Unexpected state change cause met: {:#?}", cause);
             }
             StateChangeCauseView::ValidatorAccountsUpdate => {
-                result.validators.push((account_id, balances));
+                result.validators.push(account_details);
             }
             StateChangeCauseView::TransactionProcessing { tx_hash } => {
-                let a = result.transactions.insert(*tx_hash, (account_id, balances));
-                if a.is_some() {
-                    panic!(
-                        "we have a clash inside 1 block for tx. It's better to investigate that"
+                let prev_inserted_item = result
+                    .transactions
+                    .insert(*tx_hash, account_details.clone());
+                if let Some(details) = prev_inserted_item {
+                    anyhow::bail!(
+                        "Duplicated balance changes for transaction {} at block_height {}. \
+                        One of them may be missed\n{:#?}\n{:#?}",
+                        tx_hash.to_string(),
+                        block_height,
+                        account_details,
+                        details
                     );
                 }
             }
@@ -133,46 +157,80 @@ fn collect_data_from_balance_changes(
                 // It does not affect balances, so we can skip it
             }
             StateChangeCauseView::ActionReceiptGasReward { receipt_hash } => {
-                result.rewards.insert(*receipt_hash, (account_id, balances));
+                let prev_inserted_item = result
+                    .rewards
+                    .insert(*receipt_hash, account_details.clone());
+                if let Some(details) = prev_inserted_item {
+                    anyhow::bail!(
+                        "Duplicated balance changes for receipt {} (reward), at block_height {}. \
+                        One of them may be missed\n{:#?}\n{:#?}",
+                        receipt_hash.to_string(),
+                        block_height,
+                        account_details,
+                        details
+                    );
+                }
             }
             StateChangeCauseView::ReceiptProcessing { receipt_hash } => {
-                result
+                let prev_inserted_item = result
                     .receipts
-                    .insert(*receipt_hash, (account_id, balances));
+                    .insert(*receipt_hash, account_details.clone());
+                if let Some(details) = prev_inserted_item {
+                    anyhow::bail!(
+                        "Duplicated balance changes for receipt {} at block_height {}. \
+                        One of them may be missed\n{:#?}\n{:#?}",
+                        receipt_hash.to_string(),
+                        block_height,
+                        account_details,
+                        details
+                    );
+                }
             }
         }
     }
-    result
+    Ok(result)
 }
 
 async fn store_validator_accounts_update_for_chunk(
-    validators_balances: &[(AccountId, Balances)],
+    validator_changes: &[crate::AccountWithBalance],
     block_header: &near_indexer_primitives::views::BlockHeaderView,
     shard_id: near_indexer_primitives::types::ShardId,
-    balances_cache: crate::BalancesCache,
+    balances_cache: &crate::BalanceCache,
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<Vec<BalanceChange>> {
     let mut result: Vec<BalanceChange> = vec![];
-    for (account_id, balances) in validators_balances {
-        let prev_balances: Balances =
-            get_previous_balance(account_id, balances_cache.clone(), block_header.prev_hash)
-                .await?;
-        let delta_liquid_amount: i128 = (balances.0 as i128) - (prev_balances.0 as i128);
-        let delta_locked_amount: i128 = (balances.1 as i128) - (prev_balances.1 as i128);
-
-        set_new_balances(account_id.clone(), *balances, balances_cache.clone()).await;
+    for new_details in validator_changes {
+        let prev_balance = get_balance_retriable(
+            &new_details.account_id,
+            &block_header.prev_hash,
+            balances_cache,
+            json_rpc_client,
+        )
+        .await?;
+        let deltas = get_delta_balance(&new_details.balance, &prev_balance);
+        save_latest_balance(
+            new_details.account_id.clone(),
+            &new_details.balance,
+            balances_cache,
+        )
+        .await;
 
         result.push(BalanceChange {
             block_timestamp: block_header.timestamp.into(),
             receipt_id: None,
             transaction_hash: None,
-            affected_account_id: account_id.to_string(),
+            affected_account_id: new_details.account_id.to_string(),
             involved_account_id: None,
             direction: "ACTION_TO_AFFECTED_ACCOUNT".to_string(),
             cause: "VALIDATORS_UPDATE".to_string(),
-            delta_liquid_amount: BigDecimal::from_str(&delta_liquid_amount.to_string()).unwrap(),
-            absolute_liquid_amount: BigDecimal::from_str(&balances.0.to_string()).unwrap(),
-            delta_locked_amount: BigDecimal::from_str(&delta_locked_amount.to_string()).unwrap(),
-            absolute_locked_amount: BigDecimal::from_str(&balances.1.to_string()).unwrap(),
+            delta_liquid_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
+            absolute_liquid_amount: BigDecimal::from_str(
+                &new_details.balance.non_staked.to_string(),
+            )
+            .unwrap(),
+            delta_locked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+            absolute_locked_amount: BigDecimal::from_str(&new_details.balance.staked.to_string())
+                .unwrap(),
             shard_id: shard_id as i32,
             // will enumerate later
             index_in_chunk: 0,
@@ -184,43 +242,57 @@ async fn store_validator_accounts_update_for_chunk(
 
 async fn store_transaction_execution_outcomes_for_chunk(
     transactions: &[near_indexer_primitives::IndexerTransactionWithOutcome],
-    changes: &mut HashMap<near_indexer_primitives::CryptoHash, (AccountId, Balances)>,
+    transaction_changes: &mut HashMap<
+        near_indexer_primitives::CryptoHash,
+        crate::AccountWithBalance,
+    >,
     block_header: &near_indexer_primitives::views::BlockHeaderView,
     shard_id: near_indexer_primitives::types::ShardId,
-    balances_cache: crate::BalancesCache,
+    balances_cache: &crate::BalanceCache,
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<Vec<BalanceChange>> {
     let mut result: Vec<BalanceChange> = vec![];
 
     for transaction in transactions {
         let affected_account_id = &transaction.transaction.signer_id;
-        let prev_balances: Balances = get_previous_balance(
+        let involved_account_id = match transaction.transaction.receiver_id.as_str() {
+            "system" => None,
+            _ => Some(&transaction.transaction.receiver_id),
+        };
+
+        let prev_balance = get_balance_retriable(
             affected_account_id,
-            balances_cache.clone(),
-            block_header.prev_hash,
+            &block_header.prev_hash,
+            balances_cache,
+            json_rpc_client,
         )
         .await?;
 
-        // todo error messages
-        let (account_id, new_balances) = changes
+        let details_after_transaction = transaction_changes
             .remove(&transaction.transaction.hash)
-            .expect("should be here");
-        // todo
-        if account_id != *affected_account_id {
-            panic!("should be equal");
+            .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Failed to find balance change for transaction {}",
+                &transaction.transaction.hash.to_string()
+            )
+        })?;
+
+        if details_after_transaction.account_id != *affected_account_id {
+            anyhow::bail!(
+                "Unexpected balance change info found for transaction {}.\nExpected account_id {},\nActual account_id {}",
+                &transaction.transaction.hash.to_string(),
+                affected_account_id.to_string(),
+                details_after_transaction.account_id.to_string()
+            );
         }
 
-        let delta_liquid_amount: i128 = (new_balances.0 as i128) - (prev_balances.0 as i128);
-        let delta_locked_amount: i128 = (new_balances.1 as i128) - (prev_balances.1 as i128);
-
-        set_new_balances(account_id.clone(), new_balances, balances_cache.clone()).await;
-
-        // todo I want to rewrite it better
-        let involved_account_id = &transaction.transaction.receiver_id;
-        let involved_account_id = if *involved_account_id == AccountId::from_str("system")? {
-            None
-        } else {
-            Some(involved_account_id)
-        };
+        let deltas = get_delta_balance(&details_after_transaction.balance, &prev_balance);
+        save_latest_balance(
+            affected_account_id.clone(),
+            &details_after_transaction.balance,
+            balances_cache,
+        )
+        .await;
 
         result.push(BalanceChange {
             block_timestamp: block_header.timestamp.into(),
@@ -230,21 +302,31 @@ async fn store_transaction_execution_outcomes_for_chunk(
             involved_account_id: involved_account_id.map(|id| id.to_string()),
             direction: "ACTION_FROM_AFFECTED_ACCOUNT".to_string(),
             cause: "TRANSACTION_PROCESSING".to_string(),
-            delta_liquid_amount: BigDecimal::from_str(&(delta_liquid_amount).to_string()).unwrap(),
-            absolute_liquid_amount: BigDecimal::from_str(&new_balances.0.to_string()).unwrap(),
-            delta_locked_amount: BigDecimal::from_str(&(delta_locked_amount).to_string()).unwrap(),
-            absolute_locked_amount: BigDecimal::from_str(&new_balances.1.to_string()).unwrap(),
+            delta_liquid_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
+            absolute_liquid_amount: BigDecimal::from_str(
+                &details_after_transaction.balance.non_staked.to_string(),
+            )
+            .unwrap(),
+            delta_locked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+            absolute_locked_amount: BigDecimal::from_str(
+                &details_after_transaction.balance.staked.to_string(),
+            )
+            .unwrap(),
             shard_id: shard_id as i32,
             // will enumerate later
             index_in_chunk: 0,
         });
 
-        // ----
+        // Adding the opposite entry to the DB, just to show that the second account_id was there too
         if let Some(account_id) = involved_account_id {
             // balance is not changing here, we just note the line here
-            let balances: Balances =
-                get_previous_balance(account_id, balances_cache.clone(), block_header.prev_hash)
-                    .await?;
+            let balance = get_balance_retriable(
+                account_id,
+                &block_header.prev_hash,
+                balances_cache,
+                json_rpc_client,
+            )
+            .await?;
             result.push(BalanceChange {
                 block_timestamp: block_header.timestamp.into(),
                 receipt_id: None,
@@ -254,17 +336,24 @@ async fn store_transaction_execution_outcomes_for_chunk(
                 direction: "ACTION_TO_AFFECTED_ACCOUNT".to_string(),
                 cause: "TRANSACTION_PROCESSING".to_string(),
                 delta_liquid_amount: BigDecimal::zero(),
-                absolute_liquid_amount: BigDecimal::from_str(&balances.0.to_string()).unwrap(),
+                absolute_liquid_amount: BigDecimal::from_str(&balance.non_staked.to_string())
+                    .unwrap(),
                 delta_locked_amount: BigDecimal::zero(),
-                absolute_locked_amount: BigDecimal::from_str(&balances.1.to_string()).unwrap(),
+                absolute_locked_amount: BigDecimal::from_str(&balance.staked.to_string()).unwrap(),
                 shard_id: shard_id as i32,
                 // will enumerate later
                 index_in_chunk: 0,
             });
         }
     }
-    if !changes.is_empty() {
-        panic!("We forgot about some tx.  It's better to investigate that");
+
+    if !transaction_changes.is_empty() {
+        anyhow::bail!(
+            "{} changes for transactions were not applied, block_height {}\n{:#?}",
+            transaction_changes.len(),
+            block_header.height,
+            transaction_changes
+        );
     }
 
     Ok(result)
@@ -272,201 +361,296 @@ async fn store_transaction_execution_outcomes_for_chunk(
 
 async fn store_receipt_execution_outcomes_for_chunk(
     outcomes_with_receipts: &[near_indexer_primitives::IndexerExecutionOutcomeWithReceipt],
-    receipts_changes: &mut HashMap<near_indexer_primitives::CryptoHash, (AccountId, Balances)>,
-    rewards_changes: &mut HashMap<near_indexer_primitives::CryptoHash, (AccountId, Balances)>,
+    receipt_changes: &mut HashMap<near_indexer_primitives::CryptoHash, crate::AccountWithBalance>,
+    reward_changes: &mut HashMap<near_indexer_primitives::CryptoHash, crate::AccountWithBalance>,
     block_header: &near_indexer_primitives::views::BlockHeaderView,
     shard_id: near_indexer_primitives::types::ShardId,
-    balances_cache: crate::BalancesCache,
+    balances_cache: &crate::BalanceCache,
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<Vec<BalanceChange>> {
     let mut result: Vec<BalanceChange> = vec![];
 
     for outcome_with_receipt in outcomes_with_receipts {
-        let affected_account_id = outcome_with_receipt.receipt.predecessor_id.clone();
-        let prev_balances: Balances = get_previous_balance(
-            &affected_account_id,
-            balances_cache.clone(),
-            block_header.prev_hash,
+        let receipt_id = &outcome_with_receipt.receipt.receipt_id;
+        // predecessor has made the action, as the result, receiver's balance may change
+        let affected_account_id = &outcome_with_receipt.receipt.receiver_id;
+        let involved_account_id = match outcome_with_receipt.receipt.predecessor_id.as_str() {
+            "system" => None,
+            _ => Some(&outcome_with_receipt.receipt.predecessor_id),
+        };
+
+        let prev_balance = get_balance_retriable(
+            affected_account_id,
+            &block_header.prev_hash,
+            balances_cache,
+            json_rpc_client,
         )
         .await?;
 
-        // todo error messages
-        let (account_id, new_balances) = receipts_changes
-            .remove(&outcome_with_receipt.receipt.receipt_id)
-            .expect("should be here");
-        if account_id != affected_account_id {
-            panic!("should be equal");
+        let details_after_receipt = receipt_changes.remove(receipt_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Failed to find balance change for receipt {}",
+                receipt_id.to_string()
+            )
+        })?;
+
+        if details_after_receipt.account_id != *affected_account_id {
+            anyhow::bail!(
+                "Unexpected balance change info found for receipt {}.\nExpected account_id {},\nActual account_id {}",
+                receipt_id.to_string(),
+                affected_account_id.to_string(),
+                details_after_receipt.account_id.to_string()
+            );
         }
 
-        let delta_liquid_amount: i128 = (new_balances.0 as i128) - (prev_balances.0 as i128);
-        let delta_locked_amount: i128 = (new_balances.1 as i128) - (prev_balances.1 as i128);
-
-        set_new_balances(
+        let deltas = get_delta_balance(&details_after_receipt.balance, &prev_balance);
+        save_latest_balance(
             affected_account_id.clone(),
-            new_balances,
-            balances_cache.clone(),
+            &details_after_receipt.balance,
+            balances_cache,
         )
         .await;
 
-        // todo I want to rewrite it better
-        let involved_account_id = &outcome_with_receipt.receipt.receiver_id;
-        let involved_account_id = if involved_account_id == &AccountId::from_str("system")? {
-            None
-        } else {
-            Some(involved_account_id)
-        };
-
         result.push(BalanceChange {
             block_timestamp: block_header.timestamp.into(),
-            receipt_id: Some(outcome_with_receipt.receipt.receipt_id.to_string()),
+            receipt_id: Some(receipt_id.to_string()),
             transaction_hash: None,
             affected_account_id: affected_account_id.to_string(),
             involved_account_id: involved_account_id.map(|id| id.to_string()),
-            direction: "ACTION_FROM_AFFECTED_ACCOUNT".to_string(),
+            // todo all the string to constants
+            direction: "ACTION_TO_AFFECTED_ACCOUNT".to_string(),
             cause: "RECEIPT_PROCESSING".to_string(),
-            delta_liquid_amount: BigDecimal::from_str(&(delta_liquid_amount).to_string()).unwrap(),
-            absolute_liquid_amount: BigDecimal::from_str(&new_balances.0.to_string()).unwrap(),
-            delta_locked_amount: BigDecimal::from_str(&delta_locked_amount.to_string()).unwrap(),
-            absolute_locked_amount: BigDecimal::from_str(&new_balances.1.to_string()).unwrap(),
+            delta_liquid_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
+            absolute_liquid_amount: BigDecimal::from_str(
+                &details_after_receipt.balance.non_staked.to_string(),
+            )
+            .unwrap(),
+            delta_locked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+            absolute_locked_amount: BigDecimal::from_str(
+                &details_after_receipt.balance.staked.to_string(),
+            )
+            .unwrap(),
             shard_id: shard_id as i32,
             // will enumerate later
             index_in_chunk: 0,
         });
 
-        if let Some((account_id, new_balances)) =
-            rewards_changes.remove(&outcome_with_receipt.receipt.receipt_id)
-        {
-            let prev_balances: Balances =
-                get_previous_balance(&account_id, balances_cache.clone(), block_header.prev_hash)
-                    .await?;
-
-            let delta_liquid_amount: i128 = (new_balances.0 as i128) - (prev_balances.0 as i128);
-            let delta_locked_amount: i128 = (new_balances.1 as i128) - (prev_balances.1 as i128);
-
-            set_new_balances(account_id.clone(), new_balances, balances_cache.clone()).await;
-
-            result.push(BalanceChange {
-                block_timestamp: block_header.timestamp.into(),
-                receipt_id: Some(outcome_with_receipt.receipt.receipt_id.to_string()),
-                transaction_hash: None,
-                affected_account_id: account_id.to_string(),
-                involved_account_id: Some(affected_account_id.to_string()),
-                direction: "ACTION_TO_AFFECTED_ACCOUNT".to_string(),
-                cause: "REWARD".to_string(),
-                delta_liquid_amount: BigDecimal::from_str(&(delta_liquid_amount).to_string())
-                    .unwrap(),
-                absolute_liquid_amount: BigDecimal::from_str(&new_balances.0.to_string()).unwrap(),
-                delta_locked_amount: BigDecimal::from_str(&delta_locked_amount.to_string())
-                    .unwrap(),
-                absolute_locked_amount: BigDecimal::from_str(&new_balances.1.to_string()).unwrap(),
-                shard_id: shard_id as i32,
-                // will enumerate later
-                index_in_chunk: 0,
-            });
-        }
-
-        // ----
+        // Adding the opposite entry to the DB, just to show that the second account_id was there too
         if let Some(account_id) = involved_account_id {
             // balance is not changing here, we just note the line here
-            let balances: Balances =
-                get_previous_balance(account_id, balances_cache.clone(), block_header.prev_hash)
-                    .await?;
+            let balance = get_balance_retriable(
+                account_id,
+                &block_header.prev_hash,
+                balances_cache,
+                json_rpc_client,
+            )
+            .await?;
             result.push(BalanceChange {
                 block_timestamp: block_header.timestamp.into(),
-                receipt_id: Some(outcome_with_receipt.receipt.receipt_id.to_string()),
+                receipt_id: Some(receipt_id.to_string()),
                 transaction_hash: None,
                 affected_account_id: account_id.to_string(),
                 involved_account_id: Some(affected_account_id.to_string()),
-                direction: "ACTION_TO_AFFECTED_ACCOUNT".to_string(),
+                direction: "ACTION_FROM_AFFECTED_ACCOUNT".to_string(),
                 cause: "RECEIPT_PROCESSING".to_string(),
                 delta_liquid_amount: BigDecimal::zero(),
-                absolute_liquid_amount: BigDecimal::from_str(&balances.0.to_string()).unwrap(),
+                absolute_liquid_amount: BigDecimal::from_str(&balance.non_staked.to_string())
+                    .unwrap(),
                 delta_locked_amount: BigDecimal::zero(),
-                absolute_locked_amount: BigDecimal::from_str(&balances.1.to_string()).unwrap(),
+                absolute_locked_amount: BigDecimal::from_str(&balance.staked.to_string()).unwrap(),
                 shard_id: shard_id as i32,
                 // will enumerate later
                 index_in_chunk: 0,
             });
+        }
 
-            // and we don't need to put reverse operation for rewards, it makes no sense
+        // REWARDS
+        if let Some(details_after_reward) = reward_changes.remove(receipt_id) {
+            if details_after_reward.account_id != *affected_account_id {
+                anyhow::bail!(
+                "Unexpected balance change info found for receipt_id {} (reward).\nExpected account_id {},\nActual account_id {}",
+                receipt_id.to_string(),
+                affected_account_id.to_string(),
+                details_after_reward.account_id.to_string()
+            );
+            }
+
+            let prev_balance = &details_after_receipt.balance;
+            let deltas = get_delta_balance(&details_after_reward.balance, prev_balance);
+            save_latest_balance(
+                affected_account_id.clone(),
+                &details_after_reward.balance,
+                balances_cache,
+            )
+            .await;
+
+            result.push(BalanceChange {
+                block_timestamp: block_header.timestamp.into(),
+                receipt_id: Some(receipt_id.to_string()),
+                transaction_hash: None,
+                affected_account_id: affected_account_id.to_string(),
+                involved_account_id: involved_account_id.map(|id| id.to_string()),
+                direction: "ACTION_TO_AFFECTED_ACCOUNT".to_string(),
+                cause: "REWARD".to_string(),
+                delta_liquid_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
+                absolute_liquid_amount: BigDecimal::from_str(
+                    &details_after_reward.balance.non_staked.to_string(),
+                )
+                .unwrap(),
+                delta_locked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+                absolute_locked_amount: BigDecimal::from_str(
+                    &details_after_reward.balance.staked.to_string(),
+                )
+                .unwrap(),
+                shard_id: shard_id as i32,
+                // will enumerate later
+                index_in_chunk: 0,
+            });
         }
     }
 
-    if !receipts_changes.is_empty() {
-        panic!("We forgot about some receipts. It's better to investigate that");
+    if !receipt_changes.is_empty() {
+        anyhow::bail!(
+            "{} changes for receipts were not applied, block_height {}\n{:#?}",
+            receipt_changes.len(),
+            block_header.height,
+            receipt_changes
+        );
     }
-    if !rewards_changes.is_empty() {
-        panic!("We forgot about some rewards. It's better to investigate that");
+    if !reward_changes.is_empty() {
+        anyhow::bail!(
+            "{} reward changes for receipts were not applied, block_height {}\n{:#?}",
+            reward_changes.len(),
+            block_header.height,
+            reward_changes
+        );
     }
 
     Ok(result)
 }
 
-async fn get_previous_balance(
+fn get_delta_balance(
+    new_balance: &crate::BalanceDetails,
+    old_balance: &crate::BalanceDetails,
+) -> crate::BalanceDetails {
+    crate::BalanceDetails {
+        non_staked: ((new_balance.non_staked as i128) - (old_balance.non_staked as i128)) as u128,
+        staked: ((new_balance.staked as i128) - (old_balance.staked as i128)) as u128,
+    }
+}
+
+async fn get_balance_retriable(
     account_id: &near_indexer_primitives::types::AccountId,
-    balances_cache: crate::BalancesCache,
-    prev_block_hash: near_indexer_primitives::CryptoHash,
-) -> anyhow::Result<Balances> {
-    // todo handle 11111111...
-    let mut balances_cache_lock = balances_cache.lock().await;
-    let prev_balances = match balances_cache_lock.cache_get(account_id) {
-        None => {
-            let balances = match get_account_view_for_block_hash(account_id, &prev_block_hash).await
-            {
-                Ok(account_view) => Ok((account_view.amount, account_view.locked)),
-                Err(e) => {
-                    // If the error has another type, we can't handle it
-                    let original_error = e
-                        .downcast::<JsonRpcError<RpcQueryError>>()?
-                        .handler_error()?;
-                    match original_error {
-                        // this error means that we try to touch the account which is not created yet
-                        // We can safely say that the balance is zero
-                        RpcQueryError::UnknownAccount { .. } => Ok((0, 0)),
-                        _ => Err(anyhow::Error::new(original_error)),
-                    }
-                }
-            };
-            if let Ok(b) = balances {
-                balances_cache_lock.cache_set(account_id.clone(), b);
-            }
-            balances
+    block_hash: &near_indexer_primitives::CryptoHash,
+    balance_cache: &crate::BalanceCache,
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
+) -> anyhow::Result<crate::BalanceDetails> {
+    let mut interval = crate::INTERVAL;
+    let mut retry_attempt = 0usize;
+
+    loop {
+        if retry_attempt == crate::RETRY_COUNT {
+            anyhow::bail!(
+                "Failed to perform query to RPC after {} attempts. Stop trying.\nAccount {}, block_hash {}",
+                crate::RETRY_COUNT,
+                account_id.to_string(),
+                block_hash.to_string()
+            );
         }
-        Some(balances) => Ok(*balances),
+        retry_attempt += 1;
+
+        match get_balance(account_id, block_hash, balance_cache, json_rpc_client).await {
+            Ok(res) => return Ok(res),
+            Err(err) => {
+                tracing::error!(
+                         target: crate::INDEXER,
+                         "Failed to request account view details from RPC for account {}, block_hash {}.{}\n Retrying in {} milliseconds...",
+                    account_id.to_string(),
+                     block_hash.to_string(),
+                    err,
+                         interval.as_millis(),
+                     );
+                tokio::time::sleep(interval).await;
+                if interval < crate::MAX_DELAY_TIME {
+                    interval *= 2;
+                }
+            }
+        }
+    }
+}
+
+async fn get_balance(
+    account_id: &near_indexer_primitives::types::AccountId,
+    block_hash: &near_indexer_primitives::CryptoHash,
+    balance_cache: &crate::BalanceCache,
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
+) -> anyhow::Result<crate::BalanceDetails> {
+    let mut balances_cache_lock = balance_cache.lock().await;
+    let result = match balances_cache_lock.cache_get(account_id) {
+        None => {
+            let account_balance =
+                match get_account_view(json_rpc_client, account_id, block_hash).await {
+                    Ok(account_view) => Ok(crate::BalanceDetails {
+                        non_staked: account_view.amount,
+                        staked: account_view.locked,
+                    }),
+                    Err(err) => {
+                        let original_error = err
+                            .downcast::<JsonRpcError<RpcQueryError>>()?
+                            .handler_error()?;
+                        match original_error {
+                            // this error means that we try to touch the account which is not created yet
+                            // We can safely say that the balance is zero
+                            RpcQueryError::UnknownAccount { .. } => Ok(crate::BalanceDetails {
+                                non_staked: 0,
+                                staked: 0,
+                            }),
+                            _ => Err(anyhow::anyhow!(original_error)),
+                        }
+                    }
+                };
+            if let Ok(balance) = account_balance {
+                balances_cache_lock.cache_set(account_id.clone(), balance);
+            }
+            account_balance
+        }
+        Some(balance) => Ok(*balance),
     };
     drop(balances_cache_lock);
-    prev_balances
+    result
 }
 
-async fn set_new_balances(
+async fn save_latest_balance(
     account_id: near_indexer_primitives::types::AccountId,
-    balances: Balances,
-    balances_cache: crate::BalancesCache,
+    balance: &crate::BalanceDetails,
+    balance_cache: &crate::BalanceCache,
 ) {
-    let mut balances_cache_lock = balances_cache.lock().await;
-    balances_cache_lock.cache_set(account_id, balances);
+    let mut balances_cache_lock = balance_cache.lock().await;
+    balances_cache_lock.cache_set(
+        account_id,
+        crate::BalanceDetails {
+            non_staked: balance.non_staked,
+            staked: balance.staked,
+        },
+    );
     drop(balances_cache_lock);
 }
 
-// todo add retry logic
-async fn get_account_view_for_block_hash(
+async fn get_account_view(
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
     account_id: &near_indexer_primitives::types::AccountId,
     block_hash: &near_indexer_primitives::CryptoHash,
 ) -> anyhow::Result<near_indexer_primitives::views::AccountView> {
-    let block_reference = near_indexer_primitives::types::BlockReference::BlockId(
-        near_indexer_primitives::types::BlockId::Hash(*block_hash),
-    );
-    let request = near_indexer_primitives::views::QueryRequest::ViewAccount {
-        account_id: account_id.clone(),
-    };
     let query = near_jsonrpc_client::methods::query::RpcQueryRequest {
-        block_reference,
-        request,
+        block_reference: near_indexer_primitives::types::BlockReference::BlockId(
+            near_indexer_primitives::types::BlockId::Hash(*block_hash),
+        ),
+        request: near_indexer_primitives::views::QueryRequest::ViewAccount {
+            account_id: account_id.clone(),
+        },
     };
 
-    // todo
-    let a = near_jsonrpc_client::JsonRpcClient::connect("https://archival-rpc.mainnet.near.org");
-
-    let account_response = a.call(query).await?;
+    let account_response = json_rpc_client.call(query).await?;
     match account_response.kind {
         near_jsonrpc_primitives::types::query::QueryResponseKind::ViewAccount(account) => {
             Ok(account)

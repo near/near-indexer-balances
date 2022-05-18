@@ -10,23 +10,27 @@ mod configs;
 mod db_adapters;
 mod models;
 
-// Categories for logging
 // TODO naming
 pub(crate) const INDEXER: &str = "indexer";
 
 const INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const MAX_DELAY_TIME: std::time::Duration = std::time::Duration::from_secs(120);
+const RETRY_COUNT: usize = 10;
 
-pub type Balances = (
-    near_indexer_primitives::types::Balance,
-    near_indexer_primitives::types::Balance,
-);
-// Introducing a simple cache for Receipts to find their parent Transactions without
-// touching the database
-// The key is ReceiptID
-// The value is TransactionHash (the very parent of the Receipt)
-pub type BalancesCache =
-    std::sync::Arc<Mutex<SizedCache<near_indexer_primitives::types::AccountId, Balances>>>;
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BalanceDetails {
+    pub non_staked: near_indexer_primitives::types::Balance,
+    pub staked: near_indexer_primitives::types::Balance,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountWithBalance {
+    pub account_id: near_indexer_primitives::types::AccountId,
+    pub balance: BalanceDetails,
+}
+
+pub type BalanceCache =
+    std::sync::Arc<Mutex<SizedCache<near_indexer_primitives::types::AccountId, BalanceDetails>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let config = near_lake_framework::LakeConfig {
         s3_bucket_name: opts.s3_bucket_name.clone(),
         s3_region_name: opts.s3_region_name.clone(),
-        start_block_height: 9823032, //9820210,
+        start_block_height: 9830302, //9823032, //9820210, // finished on 9832901
         s3_config: None,
     };
     init_tracing();
@@ -52,16 +56,15 @@ async fn main() -> anyhow::Result<()> {
     let stream = near_lake_framework::streamer(config);
 
     // We want to prevent unnecessary RPC queries to find previous balance
-    let balances_cache: BalancesCache =
+    let balances_cache: BalanceCache =
         std::sync::Arc::new(Mutex::new(SizedCache::with_size(100_000)));
+
+    let json_rpc_client =
+        near_jsonrpc_client::JsonRpcClient::connect("https://archival-rpc.mainnet.near.org");
 
     let mut handlers = tokio_stream::wrappers::ReceiverStream::new(stream)
         .map(|streamer_message| {
-            handle_streamer_message(
-                streamer_message,
-                &pool,
-                std::sync::Arc::clone(&balances_cache),
-            )
+            handle_streamer_message(streamer_message, &pool, &balances_cache, &json_rpc_client)
         })
         .buffer_unordered(1usize);
 
@@ -88,13 +91,15 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_streamer_message(
     streamer_message: near_indexer_primitives::StreamerMessage,
     pool: &sqlx::Pool<sqlx::Postgres>,
-    balances_cache: BalancesCache,
+    balances_cache: &BalanceCache,
+    json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<u64> {
     db_adapters::balance_changes::store_balance_changes(
         pool,
         &streamer_message.shards,
         &streamer_message.block.header,
-        std::sync::Arc::clone(&balances_cache),
+        balances_cache,
+        json_rpc_client,
     )
     .await?;
 
