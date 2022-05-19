@@ -1,15 +1,11 @@
 use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
-use near_indexer_primitives::views::{
-    AccessKeyPermissionView, ExecutionStatusView, StateChangeCauseView,
-};
+use near_indexer_primitives::views::ExecutionStatusView;
 
 use num_traits::{ToPrimitive, Zero};
 use sqlx::{Arguments, Row};
 
 pub(crate) use activities_indexer::FieldCount;
-// pub(crate) use serializers::extract_action_type_and_value_from_action_view;
-
 pub(crate) mod balance_changes;
 mod serializers;
 
@@ -141,8 +137,8 @@ pub(crate) async fn start_after_interruption(
         .expect("height should be positive"))
 }
 
-fn create_query_with_placeholders(
-    query: &str,
+// Generates `($1, $2, $3), ($4, $5, $6)`
+fn create_placeholders_chain(
     mut items_count: usize,
     fields_count: usize,
 ) -> anyhow::Result<String> {
@@ -151,9 +147,7 @@ fn create_query_with_placeholders(
     }
 
     let mut start_num: usize = 1;
-    let placeholder = create_placeholder(&mut start_num, fields_count)?;
-    // Generates `INSERT INTO table VALUES ($1, $2), ($3, $4)`
-    let mut res = query.to_owned() + " " + &placeholder;
+    let mut res = create_placeholder(&mut start_num, fields_count)?;
     items_count -= 1;
     while items_count > 0 {
         let placeholder = create_placeholder(&mut start_num, fields_count)?;
@@ -166,10 +160,7 @@ fn create_query_with_placeholders(
 }
 
 // Generates `($1, $2, $3)`
-pub fn create_placeholder(
-    start_num: &mut usize,
-    mut fields_count: usize,
-) -> anyhow::Result<String> {
+fn create_placeholder(start_num: &mut usize, mut fields_count: usize) -> anyhow::Result<String> {
     if fields_count < 1 {
         return Err(anyhow::anyhow!("At least 1 field expected"));
     }
@@ -194,39 +185,40 @@ impl PrintEnum for ExecutionStatusView {
         match self {
             ExecutionStatusView::Unknown => "UNKNOWN",
             ExecutionStatusView::Failure(_) => "FAILURE",
-            ExecutionStatusView::SuccessValue(_) => "SUCCESS_VALUE",
-            ExecutionStatusView::SuccessReceiptId(_) => "SUCCESS_RECEIPT_ID",
+            ExecutionStatusView::SuccessValue(_) => "SUCCESS",
+            ExecutionStatusView::SuccessReceiptId(_) => "SUCCESS",
         }
     }
 }
 
-impl PrintEnum for AccessKeyPermissionView {
+pub(crate) enum Direction {
+    Inbound,
+    Outbound
+}
+
+impl PrintEnum for Direction {
     fn print(&self) -> &str {
         match self {
-            AccessKeyPermissionView::FunctionCall { .. } => "FUNCTION_CALL",
-            AccessKeyPermissionView::FullAccess => "FULL_ACCESS",
+            Direction::Inbound => "INBOUND",
+            Direction::Outbound => "OUTBOUND"
         }
     }
 }
 
-impl PrintEnum for StateChangeCauseView {
+pub(crate) enum Cause {
+    ValidatorsReward,
+    Transaction,
+    Receipt,
+    ContractReward,
+}
+
+impl PrintEnum for Cause {
     fn print(&self) -> &str {
         match self {
-            StateChangeCauseView::NotWritableToDisk => {
-                panic!("Unexpected variant {:?} received", self)
-            }
-            StateChangeCauseView::InitialState => panic!("Unexpected variant {:?} received", self),
-            StateChangeCauseView::TransactionProcessing { .. } => "TRANSACTION_PROCESSING",
-            StateChangeCauseView::ActionReceiptProcessingStarted { .. } => {
-                "ACTION_RECEIPT_PROCESSING_STARTED"
-            }
-            StateChangeCauseView::ActionReceiptGasReward { .. } => "ACTION_RECEIPT_GAS_REWARD",
-            StateChangeCauseView::ReceiptProcessing { .. } => "RECEIPT_PROCESSING",
-            StateChangeCauseView::PostponedReceipt { .. } => "POSTPONED_RECEIPT",
-            StateChangeCauseView::UpdatedDelayedReceipts => "UPDATED_DELAYED_RECEIPTS",
-            StateChangeCauseView::ValidatorAccountsUpdate => "VALIDATOR_ACCOUNTS_UPDATE",
-            StateChangeCauseView::Migration => "MIGRATION",
-            StateChangeCauseView::Resharding => "RESHARDING",
+            Cause::ValidatorsReward => "VALIDATORS_REWARD",
+            Cause::Transaction => "TRANSACTION",
+            Cause::Receipt => "RECEIPT",
+            Cause::ContractReward => "CONTRACT_REWARD"
         }
     }
 }
