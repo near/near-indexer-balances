@@ -193,14 +193,14 @@ impl PrintEnum for ExecutionStatusView {
 
 pub(crate) enum Direction {
     Inbound,
-    Outbound
+    Outbound,
 }
 
 impl PrintEnum for Direction {
     fn print(&self) -> &str {
         match self {
             Direction::Inbound => "INBOUND",
-            Direction::Outbound => "OUTBOUND"
+            Direction::Outbound => "OUTBOUND",
         }
     }
 }
@@ -218,7 +218,7 @@ impl PrintEnum for Cause {
             Cause::ValidatorsReward => "VALIDATORS_REWARD",
             Cause::Transaction => "TRANSACTION",
             Cause::Receipt => "RECEIPT",
-            Cause::ContractReward => "CONTRACT_REWARD"
+            Cause::ContractReward => "CONTRACT_REWARD",
         }
     }
 }

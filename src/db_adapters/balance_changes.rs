@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use crate::models::balance_changes::BalanceChange;
+use crate::models::PrintEnum;
 use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
 use near_indexer_primitives::views::{ExecutionStatusView, StateChangeCauseView};
 use near_jsonrpc_client::errors::JsonRpcError;
 use near_jsonrpc_primitives::types::query::RpcQueryError;
 use num_traits::Zero;
-use crate::models::PrintEnum;
 
 // https://explorer.near.org/transactions/FGSPpucGQBUTPscfjQRs7Poo4XyaXGawX6QriKbhT3sE#7nu7ZAK3T11erEgG8aWTRGmz9uTHGazoNMjJdVyG3piX
 
@@ -224,7 +224,9 @@ async fn store_validator_accounts_update_for_chunk(
             involved_account_id: None,
             direction: crate::models::Direction::Inbound.print().to_string(),
             cause: crate::models::Cause::ValidatorsReward.print().to_string(),
-            status: ExecutionStatusView::SuccessValue("".to_string()).print().to_string(),
+            status: ExecutionStatusView::SuccessValue("".to_string())
+                .print()
+                .to_string(),
             delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
             absolute_nonstaked_amount: BigDecimal::from_str(
                 &new_details.balance.non_staked.to_string(),
@@ -304,7 +306,13 @@ async fn store_transaction_execution_outcomes_for_chunk(
             involved_account_id: involved_account_id.map(|id| id.to_string()),
             direction: crate::models::Direction::Outbound.print().to_string(),
             cause: crate::models::Cause::Transaction.print().to_string(),
-            status: transaction.outcome.execution_outcome.outcome.status.print().to_string(),
+            status: transaction
+                .outcome
+                .execution_outcome
+                .outcome
+                .status
+                .print()
+                .to_string(),
             delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
             absolute_nonstaked_amount: BigDecimal::from_str(
                 &details_after_transaction.balance.non_staked.to_string(),
@@ -330,7 +338,7 @@ async fn store_transaction_execution_outcomes_for_chunk(
                     balances_cache,
                     json_rpc_client,
                 )
-                    .await?;
+                .await?;
                 result.push(BalanceChange {
                     block_timestamp: block_header.timestamp.into(),
                     receipt_id: None,
@@ -339,12 +347,21 @@ async fn store_transaction_execution_outcomes_for_chunk(
                     involved_account_id: Some(affected_account_id.to_string()),
                     direction: crate::models::Direction::Inbound.print().to_string(),
                     cause: crate::models::Cause::Transaction.print().to_string(),
-                    status: transaction.outcome.execution_outcome.outcome.status.print().to_string(),
+                    status: transaction
+                        .outcome
+                        .execution_outcome
+                        .outcome
+                        .status
+                        .print()
+                        .to_string(),
                     delta_nonstaked_amount: BigDecimal::zero(),
-                    absolute_nonstaked_amount: BigDecimal::from_str(&balance.non_staked.to_string())
-                        .unwrap(),
+                    absolute_nonstaked_amount: BigDecimal::from_str(
+                        &balance.non_staked.to_string(),
+                    )
+                    .unwrap(),
                     delta_staked_amount: BigDecimal::zero(),
-                    absolute_staked_amount: BigDecimal::from_str(&balance.staked.to_string()).unwrap(),
+                    absolute_staked_amount: BigDecimal::from_str(&balance.staked.to_string())
+                        .unwrap(),
                     shard_id: shard_id as i32,
                     // will enumerate later
                     index_in_chunk: 0,
@@ -385,94 +402,100 @@ async fn store_receipt_execution_outcomes_for_chunk(
             _ => Some(&outcome_with_receipt.receipt.predecessor_id),
         };
 
-        let prev_balance = get_balance_retriable(
-            affected_account_id,
-            &block_header.prev_hash,
-            balances_cache,
-            json_rpc_client,
-        )
-        .await?;
-
-        let details_after_receipt = receipt_changes.remove(receipt_id).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Failed to find balance change for receipt {}",
-                receipt_id.to_string()
-            )
-        })?;
-
-        if details_after_receipt.account_id != *affected_account_id {
-            anyhow::bail!(
+        if let Some(details_after_receipt) = receipt_changes.remove(receipt_id) {
+            if details_after_receipt.account_id != *affected_account_id {
+                anyhow::bail!(
                 "Unexpected balance change info found for receipt {}.\nExpected account_id {},\nActual account_id {}",
                 receipt_id.to_string(),
                 affected_account_id.to_string(),
                 details_after_receipt.account_id.to_string()
             );
-        }
+            }
 
-        let deltas = get_delta_balance(&details_after_receipt.balance, &prev_balance);
-        save_latest_balance(
-            affected_account_id.clone(),
-            &details_after_receipt.balance,
-            balances_cache,
-        )
-        .await;
-
-        result.push(BalanceChange {
-            block_timestamp: block_header.timestamp.into(),
-            receipt_id: Some(receipt_id.to_string()),
-            transaction_hash: None,
-            affected_account_id: affected_account_id.to_string(),
-            involved_account_id: involved_account_id.map(|id| id.to_string()),
-            direction: crate::models::Direction::Inbound.print().to_string(),
-            cause: crate::models::Cause::Receipt.print().to_string(),
-            status: outcome_with_receipt.execution_outcome.outcome.status.print().to_string(),
-            delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
-            absolute_nonstaked_amount: BigDecimal::from_str(
-                &details_after_receipt.balance.non_staked.to_string(),
+            let prev_balance = get_balance_retriable(
+                affected_account_id,
+                &block_header.prev_hash,
+                balances_cache,
+                json_rpc_client,
             )
-            .unwrap(),
-            delta_staked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
-            absolute_staked_amount: BigDecimal::from_str(
-                &details_after_receipt.balance.staked.to_string(),
-            )
-            .unwrap(),
-            shard_id: shard_id as i32,
-            // will enumerate later
-            index_in_chunk: 0,
-        });
+            .await?;
 
-        // Adding the opposite entry to the DB, just to show that the second account_id was there too
-        if let Some(account_id) = involved_account_id {
-            if account_id != affected_account_id {
-                // balance is not changing here, we just note the line here
-                let balance = get_balance_retriable(
-                    account_id,
-                    &block_header.prev_hash,
-                    balances_cache,
-                    json_rpc_client,
-                )
-                .await?;
-                result.push(BalanceChange {
-                    block_timestamp: block_header.timestamp.into(),
-                    receipt_id: Some(receipt_id.to_string()),
-                    transaction_hash: None,
-                    affected_account_id: account_id.to_string(),
-                    involved_account_id: Some(affected_account_id.to_string()),
-                    direction: crate::models::Direction::Outbound.print().to_string(),
-                    cause: crate::models::Cause::Receipt.print().to_string(),
-                    status: outcome_with_receipt.execution_outcome.outcome.status.print().to_string(),
-                    delta_nonstaked_amount: BigDecimal::zero(),
-                    absolute_nonstaked_amount: BigDecimal::from_str(
-                        &balance.non_staked.to_string(),
-                    )
+            let deltas = get_delta_balance(&details_after_receipt.balance, &prev_balance);
+            save_latest_balance(
+                affected_account_id.clone(),
+                &details_after_receipt.balance,
+                balances_cache,
+            )
+            .await;
+
+            result.push(BalanceChange {
+                block_timestamp: block_header.timestamp.into(),
+                receipt_id: Some(receipt_id.to_string()),
+                transaction_hash: None,
+                affected_account_id: affected_account_id.to_string(),
+                involved_account_id: involved_account_id.map(|id| id.to_string()),
+                direction: crate::models::Direction::Inbound.print().to_string(),
+                cause: crate::models::Cause::Receipt.print().to_string(),
+                status: outcome_with_receipt
+                    .execution_outcome
+                    .outcome
+                    .status
+                    .print()
+                    .to_string(),
+                delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string())
                     .unwrap(),
-                    delta_staked_amount: BigDecimal::zero(),
-                    absolute_staked_amount: BigDecimal::from_str(&balance.staked.to_string())
+                absolute_nonstaked_amount: BigDecimal::from_str(
+                    &details_after_receipt.balance.non_staked.to_string(),
+                )
+                .unwrap(),
+                delta_staked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+                absolute_staked_amount: BigDecimal::from_str(
+                    &details_after_receipt.balance.staked.to_string(),
+                )
+                .unwrap(),
+                shard_id: shard_id as i32,
+                // will enumerate later
+                index_in_chunk: 0,
+            });
+
+            // Adding the opposite entry to the DB, just to show that the second account_id was there too
+            if let Some(account_id) = involved_account_id {
+                if account_id != affected_account_id {
+                    // balance is not changing here, we just note the line here
+                    let balance = get_balance_retriable(
+                        account_id,
+                        &block_header.prev_hash,
+                        balances_cache,
+                        json_rpc_client,
+                    )
+                    .await?;
+                    result.push(BalanceChange {
+                        block_timestamp: block_header.timestamp.into(),
+                        receipt_id: Some(receipt_id.to_string()),
+                        transaction_hash: None,
+                        affected_account_id: account_id.to_string(),
+                        involved_account_id: Some(affected_account_id.to_string()),
+                        direction: crate::models::Direction::Outbound.print().to_string(),
+                        cause: crate::models::Cause::Receipt.print().to_string(),
+                        status: outcome_with_receipt
+                            .execution_outcome
+                            .outcome
+                            .status
+                            .print()
+                            .to_string(),
+                        delta_nonstaked_amount: BigDecimal::zero(),
+                        absolute_nonstaked_amount: BigDecimal::from_str(
+                            &balance.non_staked.to_string(),
+                        )
                         .unwrap(),
-                    shard_id: shard_id as i32,
-                    // will enumerate later
-                    index_in_chunk: 0,
-                });
+                        delta_staked_amount: BigDecimal::zero(),
+                        absolute_staked_amount: BigDecimal::from_str(&balance.staked.to_string())
+                            .unwrap(),
+                        shard_id: shard_id as i32,
+                        // will enumerate later
+                        index_in_chunk: 0,
+                    });
+                }
             }
         }
 
@@ -487,8 +510,14 @@ async fn store_receipt_execution_outcomes_for_chunk(
             );
             }
 
-            let prev_balance = &details_after_receipt.balance;
-            let deltas = get_delta_balance(&details_after_reward.balance, prev_balance);
+            let prev_balance = get_balance_retriable(
+                affected_account_id,
+                &block_header.prev_hash,
+                balances_cache,
+                json_rpc_client,
+            )
+            .await?;
+            let deltas = get_delta_balance(&details_after_reward.balance, &prev_balance);
             save_latest_balance(
                 affected_account_id.clone(),
                 &details_after_reward.balance,
@@ -504,7 +533,12 @@ async fn store_receipt_execution_outcomes_for_chunk(
                 involved_account_id: involved_account_id.map(|id| id.to_string()),
                 direction: crate::models::Direction::Inbound.print().to_string(),
                 cause: crate::models::Cause::ContractReward.print().to_string(),
-                status: outcome_with_receipt.execution_outcome.outcome.status.print().to_string(),
+                status: outcome_with_receipt
+                    .execution_outcome
+                    .outcome
+                    .status
+                    .print()
+                    .to_string(),
                 delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string())
                     .unwrap(),
                 absolute_nonstaked_amount: BigDecimal::from_str(
@@ -670,11 +704,11 @@ async fn get_account_view(
             Ok(account)
         }
         _ => anyhow::bail!(
-                "Unreachable code! Asked for ViewAccount (block_hash {}, account_id {})\nReceived\n\
+            "Unreachable code! Asked for ViewAccount (block_hash {}, account_id {})\nReceived\n\
                 {:#?}\nReport this to https://github.com/near/near-jsonrpc-client-rs",
-                block_hash.to_string(),
-                account_id.to_string(),
-                account_response.kind
-            ),
+            block_hash.to_string(),
+            account_id.to_string(),
+            account_response.kind
+        ),
     }
 }
