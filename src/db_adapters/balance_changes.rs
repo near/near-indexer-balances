@@ -227,12 +227,12 @@ async fn store_validator_accounts_update_for_chunk(
             status: ExecutionStatusView::SuccessValue("".to_string())
                 .print()
                 .to_string(),
-            delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
+            delta_nonstaked_amount: BigDecimal::from_str(&deltas.0.to_string()).unwrap(),
             absolute_nonstaked_amount: BigDecimal::from_str(
                 &new_details.balance.non_staked.to_string(),
             )
             .unwrap(),
-            delta_staked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+            delta_staked_amount: BigDecimal::from_str(&deltas.1.to_string()).unwrap(),
             absolute_staked_amount: BigDecimal::from_str(&new_details.balance.staked.to_string())
                 .unwrap(),
             shard_id: shard_id as i32,
@@ -313,12 +313,12 @@ async fn store_transaction_execution_outcomes_for_chunk(
                 .status
                 .print()
                 .to_string(),
-            delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string()).unwrap(),
+            delta_nonstaked_amount: BigDecimal::from_str(&deltas.0.to_string()).unwrap(),
             absolute_nonstaked_amount: BigDecimal::from_str(
                 &details_after_transaction.balance.non_staked.to_string(),
             )
             .unwrap(),
-            delta_staked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+            delta_staked_amount: BigDecimal::from_str(&deltas.1.to_string()).unwrap(),
             absolute_staked_amount: BigDecimal::from_str(
                 &details_after_transaction.balance.staked.to_string(),
             )
@@ -442,13 +442,12 @@ async fn store_receipt_execution_outcomes_for_chunk(
                     .status
                     .print()
                     .to_string(),
-                delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string())
-                    .unwrap(),
+                delta_nonstaked_amount: BigDecimal::from_str(&deltas.0.to_string()).unwrap(),
                 absolute_nonstaked_amount: BigDecimal::from_str(
                     &details_after_receipt.balance.non_staked.to_string(),
                 )
                 .unwrap(),
-                delta_staked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+                delta_staked_amount: BigDecimal::from_str(&deltas.1.to_string()).unwrap(),
                 absolute_staked_amount: BigDecimal::from_str(
                     &details_after_receipt.balance.staked.to_string(),
                 )
@@ -539,13 +538,12 @@ async fn store_receipt_execution_outcomes_for_chunk(
                     .status
                     .print()
                     .to_string(),
-                delta_nonstaked_amount: BigDecimal::from_str(&deltas.non_staked.to_string())
-                    .unwrap(),
+                delta_nonstaked_amount: BigDecimal::from_str(&deltas.0.to_string()).unwrap(),
                 absolute_nonstaked_amount: BigDecimal::from_str(
                     &details_after_reward.balance.non_staked.to_string(),
                 )
                 .unwrap(),
-                delta_staked_amount: BigDecimal::from_str(&deltas.staked.to_string()).unwrap(),
+                delta_staked_amount: BigDecimal::from_str(&deltas.1.to_string()).unwrap(),
                 absolute_staked_amount: BigDecimal::from_str(
                     &details_after_reward.balance.staked.to_string(),
                 )
@@ -580,11 +578,11 @@ async fn store_receipt_execution_outcomes_for_chunk(
 fn get_delta_balance(
     new_balance: &crate::BalanceDetails,
     old_balance: &crate::BalanceDetails,
-) -> crate::BalanceDetails {
-    crate::BalanceDetails {
-        non_staked: ((new_balance.non_staked as i128) - (old_balance.non_staked as i128)) as u128,
-        staked: ((new_balance.staked as i128) - (old_balance.staked as i128)) as u128,
-    }
+) -> (i128, i128) {
+    (
+        (new_balance.non_staked as i128) - (old_balance.non_staked as i128),
+        (new_balance.staked as i128) - (old_balance.staked as i128),
+    )
 }
 
 async fn get_balance_retriable(
