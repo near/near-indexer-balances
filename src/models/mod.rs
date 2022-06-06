@@ -5,7 +5,7 @@ use near_indexer_primitives::views::ExecutionStatusView;
 use num_traits::{ToPrimitive, Zero};
 use sqlx::{Arguments, Row};
 
-pub(crate) use activities_indexer::FieldCount;
+pub(crate) use indexer_balances::FieldCount;
 pub(crate) mod balance_changes;
 mod serializers;
 

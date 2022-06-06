@@ -3,36 +3,6 @@
 version = 3
 
 [[package]]
-name = "activities-indexer"
-version = "0.1.0"
-dependencies = [
- "actix",
- "actix-http",
- "actix-rt",
- "actix-tls",
- "actix-web",
- "actix_derive",
- "anyhow",
- "bigdecimal",
- "cached",
- "clap",
- "dotenv",
- "futures",
- "near-indexer-primitives",
- "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-lake-framework",
- "num-traits",
- "quote",
- "sqlx",
- "syn",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "actix"
 version = "0.11.0-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1848,6 +1818,36 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "indexer-balances"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "actix-http",
+ "actix-rt",
+ "actix-tls",
+ "actix-web",
+ "actix_derive",
+ "anyhow",
+ "bigdecimal",
+ "cached",
+ "clap",
+ "dotenv",
+ "futures",
+ "near-indexer-primitives",
+ "near-jsonrpc-client",
+ "near-jsonrpc-primitives",
+ "near-lake-framework",
+ "num-traits",
+ "quote",
+ "sqlx",
+ "syn",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
