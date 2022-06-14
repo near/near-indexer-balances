@@ -3,6 +3,7 @@ use cached::SizedCache;
 use clap::Parser;
 use futures::StreamExt;
 
+use near_lake_framework::near_indexer_primitives;
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
@@ -53,14 +54,13 @@ async fn main() -> anyhow::Result<()> {
     };
     init_tracing();
 
-    let stream = near_lake_framework::streamer(config);
+    let (lake_handle, stream) = near_lake_framework::streamer(config);
 
     // We want to prevent unnecessary RPC queries to find previous balance
     let balances_cache: BalanceCache =
         std::sync::Arc::new(Mutex::new(SizedCache::with_size(100_000)));
 
-    let json_rpc_client =
-        near_jsonrpc_client::JsonRpcClient::connect("https://archival-rpc.mainnet.near.org");
+    let json_rpc_client = near_jsonrpc_client::JsonRpcClient::connect(&opts.near_archival_rpc_url);
 
     let mut handlers = tokio_stream::wrappers::ReceiverStream::new(stream)
         .map(|streamer_message| {
@@ -85,7 +85,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
+    // propagate errors from the Lake Framework
+    match lake_handle.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(e) => Err(anyhow::Error::from(e)), // JoinError
+    }
 }
 
 async fn handle_streamer_message(

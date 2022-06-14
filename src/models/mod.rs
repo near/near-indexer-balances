@@ -1,6 +1,6 @@
 use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
-use near_indexer_primitives::views::ExecutionStatusView;
+use near_lake_framework::near_indexer_primitives::views::ExecutionStatusView;
 
 use num_traits::{ToPrimitive, Zero};
 use sqlx::{Arguments, Row};

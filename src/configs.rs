@@ -28,4 +28,6 @@ pub(crate) struct Opts {
     /// Block height to start the stream from. If None, start from interruption
     #[clap(long, short)]
     pub start_block_height: Option<u64>,
+    #[clap(long, short)]
+    pub near_archival_rpc_url: String,
 }
