@@ -6,9 +6,12 @@ use crate::models::balance_changes::BalanceChange;
 use crate::models::PrintEnum;
 use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
-use near_indexer_primitives::views::{ExecutionStatusView, StateChangeCauseView};
 use near_jsonrpc_client::errors::JsonRpcError;
 use near_jsonrpc_primitives::types::query::RpcQueryError;
+use near_lake_framework::near_indexer_primitives::{
+    self,
+    views::{ExecutionStatusView, StateChangeCauseView},
+};
 use num_traits::Zero;
 
 // https://explorer.near.org/transactions/FGSPpucGQBUTPscfjQRs7Poo4XyaXGawX6QriKbhT3sE#7nu7ZAK3T11erEgG8aWTRGmz9uTHGazoNMjJdVyG3piX
@@ -640,20 +643,13 @@ async fn get_balance(
                         non_staked: account_view.amount,
                         staked: account_view.locked,
                     }),
-                    Err(err) => {
-                        let original_error = err
-                            .downcast::<JsonRpcError<RpcQueryError>>()?
-                            .handler_error()?;
-                        match original_error {
-                            // this error means that we try to touch the account which is not created yet
-                            // We can safely say that the balance is zero
-                            RpcQueryError::UnknownAccount { .. } => Ok(crate::BalanceDetails {
-                                non_staked: 0,
-                                staked: 0,
-                            }),
-                            _ => Err(anyhow::anyhow!(original_error)),
-                        }
-                    }
+                    Err(err) => match err.handler_error() {
+                        Some(RpcQueryError::UnknownAccount { .. }) => Ok(crate::BalanceDetails {
+                            non_staked: 0,
+                            staked: 0,
+                        }),
+                        _ => Err(err.into()),
+                    },
                 };
             if let Ok(balance) = account_balance {
                 balances_cache_lock.cache_set(account_id.clone(), balance);
@@ -686,12 +682,12 @@ async fn get_account_view(
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
     account_id: &near_indexer_primitives::types::AccountId,
     block_hash: &near_indexer_primitives::CryptoHash,
-) -> anyhow::Result<near_indexer_primitives::views::AccountView> {
+) -> Result<near_indexer_primitives::views::AccountView, JsonRpcError<RpcQueryError>> {
     let query = near_jsonrpc_client::methods::query::RpcQueryRequest {
-        block_reference: near_indexer_primitives::types::BlockReference::BlockId(
-            near_indexer_primitives::types::BlockId::Hash(*block_hash),
+        block_reference: near_primitives::types::BlockReference::BlockId(
+            near_primitives::types::BlockId::Hash(*block_hash),
         ),
-        request: near_indexer_primitives::views::QueryRequest::ViewAccount {
+        request: near_primitives::views::QueryRequest::ViewAccount {
             account_id: account_id.clone(),
         },
     };
@@ -701,7 +697,7 @@ async fn get_account_view(
         near_jsonrpc_primitives::types::query::QueryResponseKind::ViewAccount(account) => {
             Ok(account)
         }
-        _ => anyhow::bail!(
+        _ => unreachable!(
             "Unreachable code! Asked for ViewAccount (block_hash {}, account_id {})\nReceived\n\
                 {:#?}\nReport this to https://github.com/near/near-jsonrpc-client-rs",
             block_hash.to_string(),
