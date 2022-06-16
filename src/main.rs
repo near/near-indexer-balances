@@ -46,12 +46,12 @@ async fn main() -> anyhow::Result<()> {
         Some(x) => x,
         None => models::start_after_interruption(&pool).await?,
     };
-    let config = near_lake_framework::LakeConfig {
-        s3_bucket_name: opts.s3_bucket_name.clone(),
-        s3_region_name: opts.s3_region_name.clone(),
-        start_block_height,
-        s3_config: None,
-    };
+    let config = near_lake_framework::LakeConfigBuilder::default()
+        .s3_bucket_name(opts.s3_bucket_name)
+        .s3_region_name(opts.s3_region_name)
+        .start_block_height(start_block_height)
+        .blocks_preload_pool_size(1000)
+        .build()?;
     init_tracing();
 
     let (lake_handle, stream) = near_lake_framework::streamer(config);
@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
         match handle_message {
             Ok(block_height) => {
                 let elapsed = time_now.elapsed();
-                println!(
+                tracing::trace!(
                     "Elapsed time spent on block {}: {:.3?}",
                     block_height, elapsed
                 );
