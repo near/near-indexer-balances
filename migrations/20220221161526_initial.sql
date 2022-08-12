@@ -18,4 +18,5 @@ CREATE TABLE balance_changes
 );
 
 CREATE INDEX balance_changes_affected_account_idx ON balance_changes (affected_account_id);
+CREATE INDEX balance_changes_receipt_id_idx ON balance_changes (receipt_id);
 
