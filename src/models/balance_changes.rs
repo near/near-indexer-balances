@@ -42,7 +42,7 @@ impl crate::models::SqlxMethods for BalanceChange {
 
     fn insert_query(count: usize) -> anyhow::Result<String> {
         Ok("INSERT INTO balance_changes VALUES ".to_owned()
-            + &crate::models::create_placeholders_chain(count, BalanceChange::field_count())?
+            + &crate::models::create_placeholders(count, BalanceChange::field_count())?
             + " ON CONFLICT DO NOTHING")
     }
 

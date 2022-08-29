@@ -2,7 +2,7 @@
 name = "indexer-balances"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.58.1"
+rust-version = "1.62.1"
 
 [lib]
 proc-macro = true
@@ -11,7 +11,7 @@ proc-macro = true
 anyhow = "1.0.51"
 bigdecimal = { version = "0.2", features = ["serde"] }
 cached = "0.23.0"
-clap = { version = "3.1.18", features = ["color", "derive", "env"] }
+clap = { version = "3.2.17", features = ["color", "derive", "env"] }
 dotenv = "0.15.0"
 futures = "0.3.5"
 num-traits = "0.2.11"

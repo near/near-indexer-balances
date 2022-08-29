@@ -17,6 +17,10 @@ CREATE TABLE balance_changes
     PRIMARY KEY (block_timestamp, shard_id, index_in_chunk)
 );
 
-CREATE INDEX balance_changes_affected_account_idx ON balance_changes (affected_account_id);
-CREATE INDEX balance_changes_receipt_id_idx ON balance_changes (receipt_id);
+CREATE INDEX CONCURRENTLY balance_changes_affected_account_idx ON balance_changes (affected_account_id);
+CREATE INDEX CONCURRENTLY balance_changes_receipt_id_idx ON balance_changes (receipt_id);
 
+-- ALTER TABLE balance_changes
+--     ADD CONSTRAINT balance_changes_receipt_id_fk FOREIGN KEY (receipt_id) REFERENCES action_receipts(receipt_id);
+-- ALTER TABLE balance_changes
+--     ADD CONSTRAINT balance_changes_tx_hash_fk FOREIGN KEY (transaction_hash) REFERENCES transactions(transaction_hash);

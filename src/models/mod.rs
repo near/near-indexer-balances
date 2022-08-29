@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
 use near_lake_framework::near_indexer_primitives::views::ExecutionStatusView;
@@ -137,8 +139,8 @@ pub(crate) async fn start_after_interruption(
         .expect("height should be positive"))
 }
 
-// Generates `($1, $2, $3), ($4, $5, $6)`
-fn create_placeholders_chain(
+// Generates `($1, $2), ($3, $4)`
+pub(crate) fn create_placeholders(
     mut items_count: usize,
     fields_count: usize,
 ) -> anyhow::Result<String> {
@@ -150,9 +152,11 @@ fn create_placeholders_chain(
     let mut res = create_placeholder(&mut start_num, fields_count)?;
     items_count -= 1;
     while items_count > 0 {
-        let placeholder = create_placeholder(&mut start_num, fields_count)?;
-        res += ", ";
-        res += &placeholder;
+        write!(
+            res,
+            ", {}",
+            create_placeholder(&mut start_num, fields_count)?
+        )?;
         items_count -= 1;
     }
 
@@ -160,7 +164,10 @@ fn create_placeholders_chain(
 }
 
 // Generates `($1, $2, $3)`
-fn create_placeholder(start_num: &mut usize, mut fields_count: usize) -> anyhow::Result<String> {
+pub(crate) fn create_placeholder(
+    start_num: &mut usize,
+    mut fields_count: usize,
+) -> anyhow::Result<String> {
     if fields_count < 1 {
         return Err(anyhow::anyhow!("At least 1 field expected"));
     }
@@ -168,7 +175,7 @@ fn create_placeholder(start_num: &mut usize, mut fields_count: usize) -> anyhow:
     *start_num += 1;
     fields_count -= 1;
     while fields_count > 0 {
-        item += &format!(", ${}", start_num);
+        write!(item, ", ${}", start_num)?;
         *start_num += 1;
         fields_count -= 1;
     }

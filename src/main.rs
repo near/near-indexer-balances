@@ -75,7 +75,8 @@ async fn main() -> anyhow::Result<()> {
                 let elapsed = time_now.elapsed();
                 tracing::trace!(
                     "Elapsed time spent on block {}: {:.3?}",
-                    block_height, elapsed
+                    block_height,
+                    elapsed
                 );
                 time_now = std::time::Instant::now();
             }
