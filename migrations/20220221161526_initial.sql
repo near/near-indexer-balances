@@ -1,6 +1,8 @@
 CREATE TABLE balance_changes
 (
     block_timestamp           numeric(20, 0) NOT NULL,
+    -- todo add block_height
+    -- block_height           numeric(20, 0) NOT NULL,
     receipt_id                text,
     transaction_hash          text,
     affected_account_id       text           NOT NULL,
@@ -14,6 +16,7 @@ CREATE TABLE balance_changes
     absolute_staked_amount    numeric(45, 0) NOT NULL,
     shard_id                  integer        NOT NULL,
     index_in_chunk            integer        NOT NULL,
+    event_index               numeric(38, 0) NOT NULL,
     PRIMARY KEY (block_timestamp, shard_id, index_in_chunk)
 );
 

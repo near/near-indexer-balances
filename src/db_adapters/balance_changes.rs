@@ -88,9 +88,13 @@ async fn store_changes_for_chunk(
         .await?,
     );
 
-    changes.iter_mut().enumerate().for_each(|(i, mut change)| {
+    let start_from_index: u128 =
+        (block_header.timestamp as u128) / 1_000_000 * 100_000_000_000 * 100_000_000_000
+            + (shard.shard_id as u128) * 10_000_000;
+    for (i, change) in changes.iter_mut().enumerate() {
         change.index_in_chunk = i as i32;
-    });
+        change.event_index = BigDecimal::from_str(&(start_from_index + i as u128).to_string())?;
+    }
     crate::models::chunked_insert(pool, &changes, 10).await?;
     Ok(())
 }
@@ -220,6 +224,7 @@ async fn store_validator_accounts_update_for_chunk(
         .await;
 
         result.push(BalanceChange {
+            event_index: BigDecimal::zero(), // will enumerate later
             block_timestamp: block_header.timestamp.into(),
             receipt_id: None,
             transaction_hash: None,
@@ -302,6 +307,7 @@ async fn store_transaction_execution_outcomes_for_chunk(
         .await;
 
         result.push(BalanceChange {
+            event_index: BigDecimal::zero(), // will enumerate later
             block_timestamp: block_header.timestamp.into(),
             receipt_id: None,
             transaction_hash: Some(transaction.transaction.hash.to_string()),
@@ -343,6 +349,7 @@ async fn store_transaction_execution_outcomes_for_chunk(
                 )
                 .await?;
                 result.push(BalanceChange {
+                    event_index: BigDecimal::zero(), // will enumerate later
                     block_timestamp: block_header.timestamp.into(),
                     receipt_id: None,
                     transaction_hash: Some(transaction.transaction.hash.to_string()),
@@ -432,6 +439,7 @@ async fn store_receipt_execution_outcomes_for_chunk(
             .await;
 
             result.push(BalanceChange {
+                event_index: BigDecimal::zero(), // will enumerate later
                 block_timestamp: block_header.timestamp.into(),
                 receipt_id: Some(receipt_id.to_string()),
                 transaction_hash: None,
@@ -472,6 +480,7 @@ async fn store_receipt_execution_outcomes_for_chunk(
                     )
                     .await?;
                     result.push(BalanceChange {
+                        event_index: BigDecimal::zero(), // will enumerate later
                         block_timestamp: block_header.timestamp.into(),
                         receipt_id: Some(receipt_id.to_string()),
                         transaction_hash: None,
@@ -528,6 +537,7 @@ async fn store_receipt_execution_outcomes_for_chunk(
             .await;
 
             result.push(BalanceChange {
+                event_index: BigDecimal::zero(), // will enumerate later
                 block_timestamp: block_header.timestamp.into(),
                 receipt_id: Some(receipt_id.to_string()),
                 transaction_hash: None,

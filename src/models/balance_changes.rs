@@ -20,6 +20,7 @@ pub struct BalanceChange {
     pub absolute_staked_amount: BigDecimal,
     pub shard_id: i32,
     pub index_in_chunk: i32,
+    pub event_index: BigDecimal,
 }
 
 impl crate::models::SqlxMethods for BalanceChange {
@@ -38,6 +39,7 @@ impl crate::models::SqlxMethods for BalanceChange {
         args.add(&self.absolute_staked_amount);
         args.add(&self.shard_id);
         args.add(&self.index_in_chunk);
+        args.add(&self.event_index);
     }
 
     fn insert_query(count: usize) -> anyhow::Result<String> {

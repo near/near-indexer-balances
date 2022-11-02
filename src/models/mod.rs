@@ -9,7 +9,6 @@ use sqlx::{Arguments, Row};
 
 pub(crate) use indexer_balances::FieldCount;
 pub(crate) mod balance_changes;
-mod serializers;
 
 pub trait FieldCount {
     /// Get the number of fields on a struct.
