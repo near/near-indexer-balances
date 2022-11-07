@@ -89,7 +89,7 @@ async fn store_changes_for_chunk(
     );
 
     let start_from_index: u128 =
-        (block_header.timestamp as u128) / 1_000_000 * 100_000_000_000 * 100_000_000_000
+        (block_header.timestamp as u128) * 100_000_000 * 100_000_000
             + (shard.shard_id as u128) * 10_000_000;
     for (i, change) in changes.iter_mut().enumerate() {
         change.index_in_chunk = i as i32;
