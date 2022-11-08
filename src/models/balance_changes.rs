@@ -4,11 +4,12 @@ use sqlx::Arguments;
 use crate::models::FieldCount;
 
 #[derive(Debug, sqlx::FromRow, FieldCount)]
-pub struct BalanceChange {
+pub struct NearBalanceEvent {
+    pub event_index: BigDecimal,
     pub block_timestamp: BigDecimal,
+    pub block_height: BigDecimal,
     pub receipt_id: Option<String>,
     pub transaction_hash: Option<String>,
-    // do we want to additionally store originated_from_transaction_hash?
     pub affected_account_id: String,
     pub involved_account_id: Option<String>,
     pub direction: String,
@@ -18,14 +19,13 @@ pub struct BalanceChange {
     pub absolute_nonstaked_amount: BigDecimal,
     pub delta_staked_amount: BigDecimal,
     pub absolute_staked_amount: BigDecimal,
-    pub shard_id: i32,
-    pub index_in_chunk: i32,
-    pub event_index: BigDecimal,
 }
 
-impl crate::models::SqlxMethods for BalanceChange {
+impl crate::models::SqlxMethods for NearBalanceEvent {
     fn add_to_args(&self, args: &mut sqlx::postgres::PgArguments) {
+        args.add(&self.event_index);
         args.add(&self.block_timestamp);
+        args.add(&self.block_height);
         args.add(&self.receipt_id);
         args.add(&self.transaction_hash);
         args.add(&self.affected_account_id);
@@ -37,18 +37,15 @@ impl crate::models::SqlxMethods for BalanceChange {
         args.add(&self.absolute_nonstaked_amount);
         args.add(&self.delta_staked_amount);
         args.add(&self.absolute_staked_amount);
-        args.add(&self.shard_id);
-        args.add(&self.index_in_chunk);
-        args.add(&self.event_index);
     }
 
     fn insert_query(count: usize) -> anyhow::Result<String> {
-        Ok("INSERT INTO balance_changes VALUES ".to_owned()
-            + &crate::models::create_placeholders(count, BalanceChange::field_count())?
+        Ok("INSERT INTO near_balance_events VALUES ".to_owned()
+            + &crate::models::create_placeholders(count, NearBalanceEvent::field_count())?
             + " ON CONFLICT DO NOTHING")
     }
 
     fn name() -> String {
-        "balance_changes".to_string()
+        "near_balance_events".to_string()
     }
 }
