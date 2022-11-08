@@ -1,8 +1,9 @@
 use cached::Cached;
 use std::collections::HashMap;
+use std::ops::Sub;
 use std::str::FromStr;
 
-use crate::models::balance_changes::BalanceChange;
+use crate::models::balance_changes::NearBalanceEvent;
 use crate::models::PrintEnum;
 use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
@@ -46,7 +47,7 @@ async fn store_changes_for_chunk(
     balances_cache: &crate::BalanceCache,
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<()> {
-    let mut changes: Vec<BalanceChange> = vec![];
+    let mut changes: Vec<NearBalanceEvent> = vec![];
     let mut changes_data =
         collect_data_from_balance_changes(&shard.state_changes, block_header.height)?;
     // We should collect these 3 groups sequentially because they all share the same cache
@@ -54,7 +55,6 @@ async fn store_changes_for_chunk(
         store_validator_accounts_update_for_chunk(
             &changes_data.validators,
             block_header,
-            shard.shard_id,
             balances_cache,
             json_rpc_client,
         )
@@ -67,7 +67,6 @@ async fn store_changes_for_chunk(
                 x,
                 &mut changes_data.transactions,
                 block_header,
-                shard.shard_id,
                 balances_cache,
                 json_rpc_client,
             )
@@ -81,18 +80,15 @@ async fn store_changes_for_chunk(
             &mut changes_data.receipts,
             &mut changes_data.rewards,
             block_header,
-            shard.shard_id,
             balances_cache,
             json_rpc_client,
         )
         .await?,
     );
 
-    let start_from_index: u128 =
-        (block_header.timestamp as u128) * 100_000_000 * 100_000_000
-            + (shard.shard_id as u128) * 10_000_000;
+    let start_from_index: u128 = (block_header.timestamp as u128) * 100_000_000 * 100_000_000
+        + (shard.shard_id as u128) * 10_000_000;
     for (i, change) in changes.iter_mut().enumerate() {
-        change.index_in_chunk = i as i32;
         change.event_index = BigDecimal::from_str(&(start_from_index + i as u128).to_string())?;
     }
     crate::models::chunked_insert(pool, &changes, 10).await?;
@@ -202,11 +198,10 @@ fn collect_data_from_balance_changes(
 async fn store_validator_accounts_update_for_chunk(
     validator_changes: &[crate::AccountWithBalance],
     block_header: &near_indexer_primitives::views::BlockHeaderView,
-    shard_id: near_indexer_primitives::types::ShardId,
     balances_cache: &crate::BalanceCache,
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
-) -> anyhow::Result<Vec<BalanceChange>> {
-    let mut result: Vec<BalanceChange> = vec![];
+) -> anyhow::Result<Vec<NearBalanceEvent>> {
+    let mut result: Vec<NearBalanceEvent> = vec![];
     for new_details in validator_changes {
         let prev_balance = get_balance_retriable(
             &new_details.account_id,
@@ -215,7 +210,7 @@ async fn store_validator_accounts_update_for_chunk(
             json_rpc_client,
         )
         .await?;
-        let deltas = get_delta_balance(&new_details.balance, &prev_balance);
+        let deltas = get_deltas(&new_details.balance, &prev_balance)?;
         save_latest_balance(
             new_details.account_id.clone(),
             &new_details.balance,
@@ -223,9 +218,10 @@ async fn store_validator_accounts_update_for_chunk(
         )
         .await;
 
-        result.push(BalanceChange {
+        result.push(NearBalanceEvent {
             event_index: BigDecimal::zero(), // will enumerate later
             block_timestamp: block_header.timestamp.into(),
+            block_height: block_header.height.into(),
             receipt_id: None,
             transaction_hash: None,
             affected_account_id: new_details.account_id.to_string(),
@@ -235,17 +231,14 @@ async fn store_validator_accounts_update_for_chunk(
             status: ExecutionStatusView::SuccessValue("".to_string())
                 .print()
                 .to_string(),
-            delta_nonstaked_amount: BigDecimal::from_str(&deltas.0.to_string()).unwrap(),
+            delta_nonstaked_amount: deltas.0,
             absolute_nonstaked_amount: BigDecimal::from_str(
                 &new_details.balance.non_staked.to_string(),
             )
             .unwrap(),
-            delta_staked_amount: BigDecimal::from_str(&deltas.1.to_string()).unwrap(),
+            delta_staked_amount: deltas.1,
             absolute_staked_amount: BigDecimal::from_str(&new_details.balance.staked.to_string())
                 .unwrap(),
-            shard_id: shard_id as i32,
-            // will enumerate later
-            index_in_chunk: 0,
         });
     }
 
@@ -259,11 +252,10 @@ async fn store_transaction_execution_outcomes_for_chunk(
         crate::AccountWithBalance,
     >,
     block_header: &near_indexer_primitives::views::BlockHeaderView,
-    shard_id: near_indexer_primitives::types::ShardId,
     balances_cache: &crate::BalanceCache,
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
-) -> anyhow::Result<Vec<BalanceChange>> {
-    let mut result: Vec<BalanceChange> = vec![];
+) -> anyhow::Result<Vec<NearBalanceEvent>> {
+    let mut result: Vec<NearBalanceEvent> = vec![];
 
     for transaction in transactions {
         let affected_account_id = &transaction.transaction.signer_id;
@@ -298,7 +290,7 @@ async fn store_transaction_execution_outcomes_for_chunk(
             );
         }
 
-        let deltas = get_delta_balance(&details_after_transaction.balance, &prev_balance);
+        let deltas = get_deltas(&details_after_transaction.balance, &prev_balance)?;
         save_latest_balance(
             affected_account_id.clone(),
             &details_after_transaction.balance,
@@ -306,9 +298,10 @@ async fn store_transaction_execution_outcomes_for_chunk(
         )
         .await;
 
-        result.push(BalanceChange {
+        result.push(NearBalanceEvent {
             event_index: BigDecimal::zero(), // will enumerate later
             block_timestamp: block_header.timestamp.into(),
+            block_height: block_header.height.into(),
             receipt_id: None,
             transaction_hash: Some(transaction.transaction.hash.to_string()),
             affected_account_id: affected_account_id.to_string(),
@@ -322,19 +315,16 @@ async fn store_transaction_execution_outcomes_for_chunk(
                 .status
                 .print()
                 .to_string(),
-            delta_nonstaked_amount: BigDecimal::from_str(&deltas.0.to_string()).unwrap(),
+            delta_nonstaked_amount: deltas.0,
             absolute_nonstaked_amount: BigDecimal::from_str(
                 &details_after_transaction.balance.non_staked.to_string(),
             )
             .unwrap(),
-            delta_staked_amount: BigDecimal::from_str(&deltas.1.to_string()).unwrap(),
+            delta_staked_amount: deltas.1,
             absolute_staked_amount: BigDecimal::from_str(
                 &details_after_transaction.balance.staked.to_string(),
             )
             .unwrap(),
-            shard_id: shard_id as i32,
-            // will enumerate later
-            index_in_chunk: 0,
         });
 
         // Adding the opposite entry to the DB, just to show that the second account_id was there too
@@ -348,9 +338,10 @@ async fn store_transaction_execution_outcomes_for_chunk(
                     json_rpc_client,
                 )
                 .await?;
-                result.push(BalanceChange {
+                result.push(NearBalanceEvent {
                     event_index: BigDecimal::zero(), // will enumerate later
                     block_timestamp: block_header.timestamp.into(),
+                    block_height: block_header.height.into(),
                     receipt_id: None,
                     transaction_hash: Some(transaction.transaction.hash.to_string()),
                     affected_account_id: account_id.to_string(),
@@ -372,9 +363,6 @@ async fn store_transaction_execution_outcomes_for_chunk(
                     delta_staked_amount: BigDecimal::zero(),
                     absolute_staked_amount: BigDecimal::from_str(&balance.staked.to_string())
                         .unwrap(),
-                    shard_id: shard_id as i32,
-                    // will enumerate later
-                    index_in_chunk: 0,
                 });
             }
         }
@@ -397,11 +385,10 @@ async fn store_receipt_execution_outcomes_for_chunk(
     receipt_changes: &mut HashMap<near_indexer_primitives::CryptoHash, crate::AccountWithBalance>,
     reward_changes: &mut HashMap<near_indexer_primitives::CryptoHash, crate::AccountWithBalance>,
     block_header: &near_indexer_primitives::views::BlockHeaderView,
-    shard_id: near_indexer_primitives::types::ShardId,
     balances_cache: &crate::BalanceCache,
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
-) -> anyhow::Result<Vec<BalanceChange>> {
-    let mut result: Vec<BalanceChange> = vec![];
+) -> anyhow::Result<Vec<NearBalanceEvent>> {
+    let mut result: Vec<NearBalanceEvent> = vec![];
 
     for outcome_with_receipt in outcomes_with_receipts {
         let receipt_id = &outcome_with_receipt.receipt.receipt_id;
@@ -430,7 +417,7 @@ async fn store_receipt_execution_outcomes_for_chunk(
             )
             .await?;
 
-            let deltas = get_delta_balance(&details_after_receipt.balance, &prev_balance);
+            let deltas = get_deltas(&details_after_receipt.balance, &prev_balance)?;
             save_latest_balance(
                 affected_account_id.clone(),
                 &details_after_receipt.balance,
@@ -438,9 +425,10 @@ async fn store_receipt_execution_outcomes_for_chunk(
             )
             .await;
 
-            result.push(BalanceChange {
+            result.push(NearBalanceEvent {
                 event_index: BigDecimal::zero(), // will enumerate later
                 block_timestamp: block_header.timestamp.into(),
+                block_height: block_header.height.into(),
                 receipt_id: Some(receipt_id.to_string()),
                 transaction_hash: None,
                 affected_account_id: affected_account_id.to_string(),
@@ -453,19 +441,16 @@ async fn store_receipt_execution_outcomes_for_chunk(
                     .status
                     .print()
                     .to_string(),
-                delta_nonstaked_amount: BigDecimal::from_str(&deltas.0.to_string()).unwrap(),
+                delta_nonstaked_amount: deltas.0,
                 absolute_nonstaked_amount: BigDecimal::from_str(
                     &details_after_receipt.balance.non_staked.to_string(),
                 )
                 .unwrap(),
-                delta_staked_amount: BigDecimal::from_str(&deltas.1.to_string()).unwrap(),
+                delta_staked_amount: deltas.1,
                 absolute_staked_amount: BigDecimal::from_str(
                     &details_after_receipt.balance.staked.to_string(),
                 )
                 .unwrap(),
-                shard_id: shard_id as i32,
-                // will enumerate later
-                index_in_chunk: 0,
             });
 
             // Adding the opposite entry to the DB, just to show that the second account_id was there too
@@ -479,9 +464,10 @@ async fn store_receipt_execution_outcomes_for_chunk(
                         json_rpc_client,
                     )
                     .await?;
-                    result.push(BalanceChange {
+                    result.push(NearBalanceEvent {
                         event_index: BigDecimal::zero(), // will enumerate later
                         block_timestamp: block_header.timestamp.into(),
+                        block_height: block_header.height.into(),
                         receipt_id: Some(receipt_id.to_string()),
                         transaction_hash: None,
                         affected_account_id: account_id.to_string(),
@@ -502,9 +488,6 @@ async fn store_receipt_execution_outcomes_for_chunk(
                         delta_staked_amount: BigDecimal::zero(),
                         absolute_staked_amount: BigDecimal::from_str(&balance.staked.to_string())
                             .unwrap(),
-                        shard_id: shard_id as i32,
-                        // will enumerate later
-                        index_in_chunk: 0,
                     });
                 }
             }
@@ -528,7 +511,7 @@ async fn store_receipt_execution_outcomes_for_chunk(
                 json_rpc_client,
             )
             .await?;
-            let deltas = get_delta_balance(&details_after_reward.balance, &prev_balance);
+            let deltas = get_deltas(&details_after_reward.balance, &prev_balance)?;
             save_latest_balance(
                 affected_account_id.clone(),
                 &details_after_reward.balance,
@@ -536,9 +519,10 @@ async fn store_receipt_execution_outcomes_for_chunk(
             )
             .await;
 
-            result.push(BalanceChange {
+            result.push(NearBalanceEvent {
                 event_index: BigDecimal::zero(), // will enumerate later
                 block_timestamp: block_header.timestamp.into(),
+                block_height: block_header.height.into(),
                 receipt_id: Some(receipt_id.to_string()),
                 transaction_hash: None,
                 affected_account_id: affected_account_id.to_string(),
@@ -551,19 +535,16 @@ async fn store_receipt_execution_outcomes_for_chunk(
                     .status
                     .print()
                     .to_string(),
-                delta_nonstaked_amount: BigDecimal::from_str(&deltas.0.to_string()).unwrap(),
+                delta_nonstaked_amount: deltas.0,
                 absolute_nonstaked_amount: BigDecimal::from_str(
                     &details_after_reward.balance.non_staked.to_string(),
                 )
                 .unwrap(),
-                delta_staked_amount: BigDecimal::from_str(&deltas.1.to_string()).unwrap(),
+                delta_staked_amount: deltas.1,
                 absolute_staked_amount: BigDecimal::from_str(
                     &details_after_reward.balance.staked.to_string(),
                 )
                 .unwrap(),
-                shard_id: shard_id as i32,
-                // will enumerate later
-                index_in_chunk: 0,
             });
         }
     }
@@ -588,14 +569,16 @@ async fn store_receipt_execution_outcomes_for_chunk(
     Ok(result)
 }
 
-fn get_delta_balance(
+fn get_deltas(
     new_balance: &crate::BalanceDetails,
     old_balance: &crate::BalanceDetails,
-) -> (i128, i128) {
-    (
-        (new_balance.non_staked as i128) - (old_balance.non_staked as i128),
-        (new_balance.staked as i128) - (old_balance.staked as i128),
-    )
+) -> anyhow::Result<(BigDecimal, BigDecimal)> {
+    Ok((
+        BigDecimal::from_str(&new_balance.non_staked.to_string())?
+            .sub(BigDecimal::from_str(&old_balance.non_staked.to_string())?),
+        BigDecimal::from_str(&new_balance.staked.to_string())?
+            .sub(BigDecimal::from_str(&old_balance.staked.to_string())?),
+    ))
 }
 
 async fn get_balance_retriable(
