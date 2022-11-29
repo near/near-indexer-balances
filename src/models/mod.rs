@@ -61,7 +61,7 @@ async fn insert_retry_or_panic<T: SqlxMethods + std::fmt::Debug>(
             Ok(_) => break,
             Err(async_error) => {
                 tracing::error!(
-                         target: crate::INDEXER,
+                         target: crate::LOGGING_PREFIX,
                          "Error occurred during {}:\n{} were not stored. \n{:#?} \n Retrying in {} milliseconds...",
                          async_error,
                          &T::name(),
@@ -106,7 +106,7 @@ pub async fn select_retry_or_panic(
             Err(async_error) => {
                 // todo we print here select with non-filled placeholders. It would be better to get the final select statement here
                 tracing::error!(
-                         target: crate::INDEXER,
+                         target: crate::LOGGING_PREFIX,
                          "Error occurred during {}:\nFailed SELECT:\n{}\n Retrying in {} milliseconds...",
                          async_error,
                     query,

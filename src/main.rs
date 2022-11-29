@@ -2,17 +2,26 @@
 use cached::SizedCache;
 use clap::Parser;
 use futures::StreamExt;
+use near_primitives::time::Utc;
 
+use metrics_server::{
+    init_metrics_server, BLOCK_PROCESSED_TOTAL, LAST_SEEN_BLOCK_HEIGHT, LATEST_BLOCK_TIMESTAMP_DIFF,
+};
 use near_lake_framework::near_indexer_primitives;
+use near_primitives::utils::from_timestamp;
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
 mod configs;
 mod db_adapters;
+mod metrics_server;
 mod models;
 
+#[macro_use]
+extern crate lazy_static;
+
 // TODO naming
-pub(crate) const INDEXER: &str = "indexer";
+pub(crate) const LOGGING_PREFIX: &str = "indexer_balances";
 
 const INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const MAX_DELAY_TIME: std::time::Duration = std::time::Duration::from_secs(120);
@@ -46,52 +55,55 @@ async fn main() -> anyhow::Result<()> {
         Some(x) => x,
         None => models::start_after_interruption(&pool).await?,
     };
-    let config = near_lake_framework::LakeConfigBuilder::default()
-        .s3_bucket_name(opts.s3_bucket_name)
-        .s3_region_name(opts.s3_region_name)
-        .start_block_height(start_block_height)
-        .blocks_preload_pool_size(1000)
-        .build()?;
+    let config_builder = near_lake_framework::LakeConfigBuilder::default();
+
+    let config = match opts.chain_id.as_str() {
+        "mainnet" => config_builder.mainnet(),
+        "testnet" => config_builder.testnet(),
+        _ => panic!(),
+    }
+    .start_block_height(start_block_height)
+    .build()?;
+
     init_tracing();
 
-    let (lake_handle, stream) = near_lake_framework::streamer(config);
+    let (_lake_handle, stream) = near_lake_framework::streamer(config);
 
     // We want to prevent unnecessary RPC queries to find previous balance
     let balances_cache: BalanceCache =
         std::sync::Arc::new(Mutex::new(SizedCache::with_size(100_000)));
 
     let json_rpc_client = near_jsonrpc_client::JsonRpcClient::connect(&opts.near_archival_rpc_url);
+    tokio::spawn(async move {
+        let mut handlers = tokio_stream::wrappers::ReceiverStream::new(stream)
+            .map(|streamer_message| {
+                handle_streamer_message(streamer_message, &pool, &balances_cache, &json_rpc_client)
+            })
+            .buffer_unordered(1usize);
 
-    let mut handlers = tokio_stream::wrappers::ReceiverStream::new(stream)
-        .map(|streamer_message| {
-            handle_streamer_message(streamer_message, &pool, &balances_cache, &json_rpc_client)
-        })
-        .buffer_unordered(1usize);
+        let mut time_now = std::time::Instant::now();
+        while let Some(handle_message) = handlers.next().await {
+            match handle_message {
+                Ok(block_height) => {
+                    let elapsed = time_now.elapsed();
+                    tracing::trace!(
+                        "Elapsed time spent on block {}: {:.3?}",
+                        block_height,
+                        elapsed
+                    );
+                    time_now = std::time::Instant::now();
+                }
+                Err(_e) => {
+                    // return Err(anyhow::Error!(e));
+                }
 
-    let mut time_now = std::time::Instant::now();
-    while let Some(handle_message) = handlers.next().await {
-        match handle_message {
-            Ok(block_height) => {
-                let elapsed = time_now.elapsed();
-                tracing::trace!(
-                    "Elapsed time spent on block {}: {:.3?}",
-                    block_height,
-                    elapsed
-                );
-                time_now = std::time::Instant::now();
             }
-            Err(e) => {
-                return Err(anyhow::anyhow!(e));
-            }
-        }
     }
+    });
+    // });
+    init_metrics_server().await?;
 
-    // propagate errors from the Lake Framework
-    match lake_handle.await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e),
-        Err(e) => Err(anyhow::Error::from(e)), // JoinError
-    }
+    Ok(())
 }
 
 async fn handle_streamer_message(
@@ -100,6 +112,11 @@ async fn handle_streamer_message(
     balances_cache: &BalanceCache,
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<u64> {
+    LAST_SEEN_BLOCK_HEIGHT.set(streamer_message.block.header.height.try_into().unwrap());
+    let now = Utc::now();
+    let block_timestamp = from_timestamp(streamer_message.block.header.timestamp_nanosec);
+    LATEST_BLOCK_TIMESTAMP_DIFF.set((now - block_timestamp).num_seconds() as f64);
+
     db_adapters::balance_changes::store_balance_changes(
         pool,
         &streamer_message.shards,
@@ -109,6 +126,7 @@ async fn handle_streamer_message(
     )
     .await?;
 
+    BLOCK_PROCESSED_TOTAL.inc();
     Ok(streamer_message.block.header.height)
 }
 

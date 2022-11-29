@@ -13,21 +13,33 @@ use clap::Parser;
 )]
 pub(crate) struct Opts {
     /// Enabled Indexer for Explorer debug level of logs
-    #[clap(long)]
+    #[clap(long, env)]
     pub debug: bool,
     // todo
     // /// Store initial data from genesis like Accounts, AccessKeys
     // #[clap(long)]
     // pub store_genesis: bool,
     /// AWS S3 bucket name to get the stream from
-    #[clap(long)]
+    #[clap(long, env)]
     pub s3_bucket_name: String,
+    /// AWS Access Key with the rights to read from AWS S3
+    #[clap(long, env)]
+    pub lake_aws_access_key: String,
+    #[clap(long, env)]
+    /// AWS Secret Access Key with the rights to read from AWS S3
+    pub lake_aws_secret_access_key: String,
     /// AWS S3 bucket region
-    #[clap(long)]
+    #[clap(long, env)]
     pub s3_region_name: String,
     /// Block height to start the stream from. If None, start from interruption
-    #[clap(long, short)]
+    #[clap(long, short, env)]
     pub start_block_height: Option<u64>,
-    #[clap(long, short)]
+    #[clap(long, short, env)]
     pub near_archival_rpc_url: String,
+    // Chain ID: testnet or mainnet
+    #[clap(long, env)]
+    pub chain_id: String,
+    /// Port to enable metrics/health service
+    #[clap(long, short, env)]
+    pub port: u16,
 }
