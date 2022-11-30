@@ -55,18 +55,11 @@ async fn main() -> anyhow::Result<()> {
         Some(x) => x,
         None => models::start_after_interruption(&pool).await?,
     };
-    let config_builder = near_lake_framework::LakeConfigBuilder::default();
-
-    let config = match opts.chain_id.as_str() {
-        "mainnet" => config_builder.mainnet(),
-        "testnet" => config_builder.testnet(),
-        _ => panic!(),
-    }
-    .start_block_height(start_block_height)
-    .build()?;
 
     init_tracing();
 
+     // create a lake configuration with S3 information passed in as ENV vars
+     let config = opts.get_lake_config(start_block_height).await;
     let (_lake_handle, stream) = near_lake_framework::streamer(config);
 
     // We want to prevent unnecessary RPC queries to find previous balance
