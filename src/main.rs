@@ -100,7 +100,6 @@ async fn main() -> anyhow::Result<()> {
             }
     }
     });
-    // });
     init_metrics_server().await?;
 
     Ok(())
