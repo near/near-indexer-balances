@@ -30,3 +30,7 @@ While merging, we can meet the situation #2 and #3 at the same point of time.
 We need to find the right order of storing such cases.  
 I feel these 2 situations never affect each other, so any order will work fine.
 I decided to put `account_changes` data first (just to be consistent)
+
+### Contribution Guide
+
+Please refer to this [guide](https://github.com/near/near-indexer-for-explorer/blob/master/CONTRIBUTING.md) before submitting PRs to this repo 
