@@ -3,14 +3,13 @@ use cached::SizedCache;
 use clap::Parser;
 use futures::StreamExt;
 use near_primitives::time::Utc;
-
+use configs::{Opts,init_tracing};
 use metrics_server::{
     init_metrics_server, BLOCK_PROCESSED_TOTAL, LAST_SEEN_BLOCK_HEIGHT, LATEST_BLOCK_TIMESTAMP_DIFF,
 };
 use near_lake_framework::near_indexer_primitives;
 use near_primitives::utils::from_timestamp;
 use tokio::sync::Mutex;
-use tracing_subscriber::EnvFilter;
 
 mod configs;
 mod db_adapters;
@@ -46,7 +45,7 @@ pub type BalanceCache =
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
-    let opts = crate::configs::Opts::parse();
+    let opts = Opts::parse();
     let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
     // TODO Error: while executing migrations: error returned from database: 1128 (HY000): Function 'near_indexer.GET_LOCK' is not defined
     // sqlx::migrate!().run(&pool).await?;
@@ -56,10 +55,10 @@ async fn main() -> anyhow::Result<()> {
         None => models::start_after_interruption(&pool).await?,
     };
 
-    init_tracing();
+    init_tracing(opts.debug)?;
 
      // create a lake configuration with S3 information passed in as ENV vars
-     let config = opts.get_lake_config(start_block_height).await;
+    let config = opts.to_lake_config(start_block_height).await;
     let (_lake_handle, stream) = near_lake_framework::streamer(config);
 
     // We want to prevent unnecessary RPC queries to find previous balance
@@ -120,27 +119,4 @@ async fn handle_streamer_message(
 
     BLOCK_PROCESSED_TOTAL.inc();
     Ok(streamer_message.block.header.height)
-}
-
-fn init_tracing() {
-    let mut env_filter = EnvFilter::new("near_lake_framework=info");
-
-    if let Ok(rust_log) = std::env::var("RUST_LOG") {
-        if !rust_log.is_empty() {
-            for directive in rust_log.split(',').filter_map(|s| match s.parse() {
-                Ok(directive) => Some(directive),
-                Err(err) => {
-                    eprintln!("Ignoring directive `{}`: {}", s, err);
-                    None
-                }
-            }) {
-                env_filter = env_filter.add_directive(directive);
-            }
-        }
-    }
-
-    tracing_subscriber::fmt::Subscriber::builder()
-        .with_env_filter(env_filter)
-        .with_writer(std::io::stderr)
-        .init();
 }

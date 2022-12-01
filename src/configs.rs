@@ -1,4 +1,7 @@
+use std::env;
+
 use clap::Parser;
+use tracing_subscriber::EnvFilter;
 
 use crate::LOGGING_PREFIX;
 
@@ -24,12 +27,6 @@ pub(crate) struct Opts {
     /// AWS S3 bucket name to get the stream from
     #[clap(long, env)]
     pub s3_bucket_name: String,
-    /// AWS Access Key with the rights to read from AWS S3
-    #[clap(long, env)]
-    pub lake_aws_access_key: String,
-    #[clap(long, env)]
-    /// AWS Secret Access Key with the rights to read from AWS S3
-    pub lake_aws_secret_access_key: String,
     /// AWS S3 bucket region
     #[clap(long, env)]
     pub s3_region_name: String,
@@ -47,29 +44,9 @@ pub(crate) struct Opts {
 }
 
 impl Opts {
-    // Creates AWS Credentials for NEAR Lake
-    fn lake_credentials(&self) -> aws_types::credentials::SharedCredentialsProvider {
-        let provider = aws_types::Credentials::new(
-            self.lake_aws_access_key.clone(),
-            self.lake_aws_secret_access_key.clone(),
-            None,
-            None,
-            "events_indexer",
-        );
-        aws_types::credentials::SharedCredentialsProvider::new(provider)
-    }
 
-    /// Creates AWS Shared Config for NEAR Lake
-    pub fn lake_aws_sdk_config(&self) -> aws_types::sdk_config::SdkConfig {
-        aws_types::sdk_config::SdkConfig::builder()
-            .credentials_provider(self.lake_credentials())
-            .region(aws_types::region::Region::new(self.s3_region_name.clone()))
-            .build()
-    }
-
-    pub async fn get_lake_config(&self, start_block_height: u64) -> near_lake_framework::LakeConfig {
-        let s3_config = aws_sdk_s3::config::Builder::from(&self.lake_aws_sdk_config()).build();
-        let config_builder = near_lake_framework::LakeConfigBuilder::default().s3_config(s3_config);
+    pub async fn to_lake_config(&self, start_block_height: u64) -> near_lake_framework::LakeConfig {
+        let config_builder = near_lake_framework::LakeConfigBuilder::default();
 
         tracing::info!(target: LOGGING_PREFIX, "Chain_id: {}", self.chain_id);
 
@@ -85,4 +62,45 @@ impl Opts {
         .build()
         .expect("Failed to build LakeConfig")
     }
+}
+
+
+pub(crate) fn init_tracing(debug: bool) -> anyhow::Result<()> {
+    let mut env_filter = EnvFilter::new("indexer_balances=info");
+
+    if debug {
+        env_filter = env_filter
+            .add_directive("near_lake_framework=debug".parse()?);
+    }
+
+    if let Ok(rust_log) = env::var("RUST_LOG") {
+        if !rust_log.is_empty() {
+            for directive in rust_log.split(',').filter_map(|s| match s.parse() {
+                Ok(directive) => Some(directive),
+                Err(err) => {
+                    tracing::warn!(
+                        target: crate::LOGGING_PREFIX,
+                        "Ignoring directive `{}`: {}",
+                        s,
+                        err
+                    );
+                    None
+                }
+            }) {
+                env_filter = env_filter.add_directive(directive);
+            }
+        }
+    }
+
+    let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+        .with_env_filter(env_filter)
+        .with_writer(std::io::stderr);
+
+    if std::env::var("ENABLE_JSON_LOGS").is_ok() {
+        subscriber.json().init();
+    } else {
+        subscriber.compact().init();
+    }
+
+    Ok(())
 }
