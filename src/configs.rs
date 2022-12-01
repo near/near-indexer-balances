@@ -44,7 +44,8 @@ pub(crate) struct Opts {
 }
 
 impl Opts {
-
+    // returns a Lake Config object where AWS credentials are sourced from .env file first, and then from .aws/credentials if not found.
+    // https://docs.aws.amazon.com/sdk-for-rust/latest/dg/credentials.html
     pub async fn to_lake_config(&self, start_block_height: u64) -> near_lake_framework::LakeConfig {
         let config_builder = near_lake_framework::LakeConfigBuilder::default();
 
@@ -57,20 +58,22 @@ impl Opts {
             "testnet" => config_builder
                 .testnet()
                 .start_block_height(start_block_height),
-            _ => panic!("CHAIN_ID is not set to a valid enviornment name. Try `mainnet` or `testnet`")
+            _ => panic!(
+                "CHAIN_ID is not set to a valid enviornment name. Try `mainnet` or `testnet`"
+            ),
         }
         .build()
         .expect("Failed to build LakeConfig")
     }
 }
 
-
-pub(crate) fn init_tracing(debug: bool) -> anyhow::Result<()> {
+pub(crate) fn init_tracing(
+    debug: bool,
+) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
     let mut env_filter = EnvFilter::new("indexer_balances=info");
 
     if debug {
-        env_filter = env_filter
-            .add_directive("near_lake_framework=debug".parse()?);
+        env_filter = env_filter.add_directive("near_lake_framework=debug".parse()?);
     }
 
     if let Ok(rust_log) = env::var("RUST_LOG") {
@@ -92,9 +95,11 @@ pub(crate) fn init_tracing(debug: bool) -> anyhow::Result<()> {
         }
     }
 
+    let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
+
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
-        .with_env_filter(env_filter)
-        .with_writer(std::io::stderr);
+        .with_writer(non_blocking)
+        .with_env_filter(env_filter);
 
     if std::env::var("ENABLE_JSON_LOGS").is_ok() {
         subscriber.json().init();
@@ -102,5 +107,5 @@ pub(crate) fn init_tracing(debug: bool) -> anyhow::Result<()> {
         subscriber.compact().init();
     }
 
-    Ok(())
+    Ok(guard)
 }

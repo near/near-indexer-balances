@@ -1,13 +1,13 @@
 // // TODO cleanup imports in all the files in the end
 use cached::SizedCache;
 use clap::Parser;
+use configs::{init_tracing, Opts};
 use futures::StreamExt;
-use near_primitives::time::Utc;
-use configs::{Opts,init_tracing};
 use metrics_server::{
     init_metrics_server, BLOCK_PROCESSED_TOTAL, LAST_SEEN_BLOCK_HEIGHT, LATEST_BLOCK_TIMESTAMP_DIFF,
 };
 use near_lake_framework::near_indexer_primitives;
+use near_primitives::time::Utc;
 use near_primitives::utils::from_timestamp;
 use tokio::sync::Mutex;
 
@@ -55,9 +55,9 @@ async fn main() -> anyhow::Result<()> {
         None => models::start_after_interruption(&pool).await?,
     };
 
-    init_tracing(opts.debug)?;
+    let _worker_guard = init_tracing(opts.debug)?;
 
-     // create a lake configuration with S3 information passed in as ENV vars
+    // create a lake configuration with S3 information passed in as ENV vars
     let config = opts.to_lake_config(start_block_height).await;
     let (_lake_handle, stream) = near_lake_framework::streamer(config);
 
@@ -88,9 +88,8 @@ async fn main() -> anyhow::Result<()> {
                 Err(_e) => {
                     // return Err(anyhow::Error!(e));
                 }
-
             }
-    }
+        }
     });
     init_metrics_server().await?;
 

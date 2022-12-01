@@ -20,13 +20,12 @@ syn = "1.0.90"
 tokio = { version = "1.8", features = ["sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1" }
 tracing = "0.1.35"
-tracing-subscriber = { version = "0.3.11", features = ["fmt", "local-time", "env-filter"] }
+tracing-subscriber = "0.2.4"
+tracing-appender = "0.1.2"
 prometheus = "0.13.1"
 quote = "1.0.17"
 actix-web = "=4.0.1"
 lazy_static = "1.4.0"
-aws-types= "0.13.0"
-aws-sdk-s3="0.13.0"
 
 near-jsonrpc-primitives = "0.14.0"
 near-jsonrpc-client = "0.4.0-beta.0"
