@@ -3,17 +3,12 @@ use cached::SizedCache;
 use clap::Parser;
 use configs::{init_tracing, Opts};
 use futures::StreamExt;
-use metrics_server::{
-    init_metrics_server, BLOCK_PROCESSED_TOTAL, LAST_SEEN_BLOCK_HEIGHT, LATEST_BLOCK_TIMESTAMP_DIFF,
-};
 use near_lake_framework::near_indexer_primitives;
-use near_primitives::time::Utc;
-use near_primitives::utils::from_timestamp;
 use tokio::sync::Mutex;
 
 mod configs;
 mod db_adapters;
-mod metrics_server;
+mod metrics;
 mod models;
 
 #[macro_use]
@@ -91,7 +86,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    init_metrics_server().await?;
+
+    metrics::init_metrics_server().await?;
 
     Ok(())
 }
@@ -102,10 +98,8 @@ async fn handle_streamer_message(
     balances_cache: &BalanceCache,
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<u64> {
-    LAST_SEEN_BLOCK_HEIGHT.set(streamer_message.block.header.height.try_into().unwrap());
-    let now = Utc::now();
-    let block_timestamp = from_timestamp(streamer_message.block.header.timestamp_nanosec);
-    LATEST_BLOCK_TIMESTAMP_DIFF.set((now - block_timestamp).num_seconds() as f64);
+    metrics::BLOCK_PROCESSED_TOTAL.inc();
+    metrics::LATEST_BLOCK_HEIGHT.set(streamer_message.block.header.height.try_into().unwrap());
 
     db_adapters::balance_changes::store_balance_changes(
         pool,
@@ -116,6 +110,5 @@ async fn handle_streamer_message(
     )
     .await?;
 
-    BLOCK_PROCESSED_TOTAL.inc();
     Ok(streamer_message.block.header.height)
 }
