@@ -99,7 +99,7 @@ async fn handle_streamer_message(
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<u64> {
     metrics::BLOCK_PROCESSED_TOTAL.inc();
-    metrics::LATEST_BLOCK_HEIGHT.set(streamer_message.block.header.height.try_into().unwrap());
+    metrics::LATEST_BLOCK_HEIGHT.set(i64::try_from(streamer_message.block.header.height)?);
 
     db_adapters::balance_changes::store_balance_changes(
         pool,
