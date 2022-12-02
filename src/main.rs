@@ -99,6 +99,7 @@ async fn handle_streamer_message(
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<u64> {
     metrics::BLOCK_PROCESSED_TOTAL.inc();
+    // Prometheus Guage Metric type only supports i64 and f64 types for the time being, so we need to cast the type into i64
     metrics::LATEST_BLOCK_HEIGHT.set(i64::try_from(streamer_message.block.header.height)?);
 
     db_adapters::balance_changes::store_balance_changes(
