@@ -14,7 +14,6 @@ mod models;
 #[macro_use]
 extern crate lazy_static;
 
-// TODO naming
 pub(crate) const LOGGING_PREFIX: &str = "indexer_balances";
 
 const INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
