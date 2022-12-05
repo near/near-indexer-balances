@@ -37,9 +37,9 @@ pub(crate) struct Opts {
     pub near_archival_rpc_url: String,
     // Chain ID: testnet or mainnet
     #[clap(long, env)]
-    pub chain_id: String,
-    /// Port to enable metrics/health service
-    #[clap(long, short, env)]
+    pub chain_id: String,    
+    /// Port to enable metrics service
+    #[clap(long, short, env, default_value = "3000")]
     pub port: u16,
 }
 

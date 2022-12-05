@@ -125,7 +125,7 @@ pub(crate) async fn start_after_interruption(
     pool: &sqlx::Pool<sqlx::Postgres>,
 ) -> anyhow::Result<u64> {
     let query = "SELECT block_height
-                        FROM blocks
+                        FROM near_balance_events
                         ORDER BY block_timestamp desc
                         LIMIT 1";
 
