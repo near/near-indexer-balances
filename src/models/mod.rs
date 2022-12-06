@@ -130,14 +130,12 @@ pub(crate) async fn start_after_interruption(
                         LIMIT 1";
 
     let res = select_retry_or_panic(pool, query, &[], 10).await?;
-    let latest_block_height_in_db = res
+    Ok(res
         .first()
-        .ok_or_else(|| {
-            anyhow::format_err!("START_BLOCK_HEIGHT should be provided on indexer's first launch")
-        })
-        .map(|value| value.get::<BigDecimal, _>(0))?;
-    
-    Ok(latest_block_height_in_db.to_u64().expect("height should be positive"))
+        .map(|value| value.get::<BigDecimal, _>(0))
+        .expect("`START_BLOCK_HEIGHT` should be provided when the DB is empty")
+        .to_u64()
+        .expect("height should be positive"))
 }
 
 // Generates `($1, $2), ($3, $4)`
