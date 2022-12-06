@@ -4,7 +4,7 @@ use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
 use near_lake_framework::near_indexer_primitives::views::ExecutionStatusView;
 
-use num_traits::{ToPrimitive, Zero};
+use num_traits::ToPrimitive;
 use sqlx::{Arguments, Row};
 
 pub(crate) use indexer_balances::FieldCount;
@@ -130,12 +130,14 @@ pub(crate) async fn start_after_interruption(
                         LIMIT 1";
 
     let res = select_retry_or_panic(pool, query, &[], 10).await?;
-    Ok(res
+    let latest_block_height_in_db = res
         .first()
-        .map(|value| value.get(0))
-        .unwrap_or_else(BigDecimal::zero)
-        .to_u64()
-        .expect("height should be positive"))
+        .ok_or_else(|| {
+            anyhow::format_err!("START_BLOCK_HEIGHT should be provided on indexer's first launch")
+        })
+        .map(|value| value.get::<BigDecimal, _>(0))?;
+    
+    Ok(latest_block_height_in_db.to_u64().expect("height should be positive"))
 }
 
 // Generates `($1, $2), ($3, $4)`
