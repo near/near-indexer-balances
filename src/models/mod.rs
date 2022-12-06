@@ -138,7 +138,11 @@ pub(crate) async fn start_after_interruption(
         .expect("height should be positive");
 
     // We start reindexing 1000 blocks before the latest block height in the DB.
-    Ok(std::cmp::max(latest_block_height - 1000, 0))
+    if latest_block_height < 1000 {
+        Ok(0)
+    } else {
+        Ok(latest_block_height - 1000)
+    }
 }
 
 // Generates `($1, $2), ($3, $4)`
