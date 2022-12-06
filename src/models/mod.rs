@@ -137,7 +137,7 @@ pub(crate) async fn start_after_interruption(
         .to_u64()
         .expect("height should be positive");
 
-    // We start from reindexing 1000 blocks before the latest block height in the DB.
+    // We start reindexing 1000 blocks before the latest block height in the DB.
     Ok(latest_block_height - 1000)
 }
 
