@@ -130,12 +130,14 @@ pub(crate) async fn start_after_interruption(
                         LIMIT 1";
 
     let res = select_retry_or_panic(pool, query, &[], 10).await?;
-    Ok(res
+    let latest_block_height = res
         .first()
         .map(|value| value.get::<BigDecimal, _>(0))
         .expect("`START_BLOCK_HEIGHT` should be provided when the DB is empty")
         .to_u64()
-        .expect("height should be positive"))
+        .expect("height should be positive");
+
+    Ok(latest_block_height - 1000)
 }
 
 // Generates `($1, $2), ($3, $4)`
