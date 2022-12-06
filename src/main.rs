@@ -72,23 +72,26 @@ async fn main() -> anyhow::Result<()> {
             match handle_message {
                 Ok(block_height) => {
                     let elapsed = time_now.elapsed();
-                    tracing::trace!(
+                    tracing::info!(
+                        target: LOGGING_PREFIX,
                         "Elapsed time spent on block {}: {:.3?}",
                         block_height,
                         elapsed
                     );
                     time_now = std::time::Instant::now();
                 }
-                Err(_e) => {
-                    // return Err(anyhow::Error!(e));
+                Err(e) => {
+                    tracing::error!(target: LOGGING_PREFIX, "Stop indexing due to {}", e);
+                    // we do not catch this error anywhere, this thread is just stopped with error,
+                    // main thread continues serving metrics
+                    anyhow::bail!(e)
                 }
             }
         }
+        Ok(()) // unreachable statement, loop above is endless
     });
 
-    metrics::init_metrics_server().await?;
-
-    Ok(())
+    metrics::init_metrics_server(opts.port).await
 }
 
 async fn handle_streamer_message(
@@ -98,7 +101,8 @@ async fn handle_streamer_message(
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<u64> {
     metrics::BLOCK_PROCESSED_TOTAL.inc();
-    // Prometheus Guage Metric type only supports i64 and f64 types for the time being, so we need to cast the type into i64
+    // Prometheus Gauge Metric type do not support u64
+    // https://github.com/tikv/rust-prometheus/issues/470
     metrics::LATEST_BLOCK_HEIGHT.set(i64::try_from(streamer_message.block.header.height)?);
 
     db_adapters::balance_changes::store_balance_changes(
