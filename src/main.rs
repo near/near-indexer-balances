@@ -40,6 +40,8 @@ async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
     let opts = Opts::parse();
+    let _worker_guard = init_tracing(opts.debug)?;
+
     let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
     // TODO Error: while executing migrations: error returned from database: 1128 (HY000): Function 'near_indexer.GET_LOCK' is not defined
     // sqlx::migrate!().run(&pool).await?;
@@ -48,8 +50,11 @@ async fn main() -> anyhow::Result<()> {
         Some(x) => x,
         None => models::start_after_interruption(&pool).await?,
     };
-
-    let _worker_guard = init_tracing(opts.debug)?;
+    tracing::info!(
+        target: LOGGING_PREFIX,
+        "Indexer will start from block {}",
+        start_block_height
+    );
 
     // create a lake configuration with S3 information passed in as ENV vars
     let config = opts.to_lake_config(start_block_height).await;

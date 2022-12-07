@@ -130,19 +130,14 @@ pub(crate) async fn start_after_interruption(
                         LIMIT 1";
 
     let res = select_retry_or_panic(pool, query, &[], 10).await?;
-    let latest_block_height = res
+    Ok(res
         .first()
         .map(|value| value.get::<BigDecimal, _>(0))
         .expect("`START_BLOCK_HEIGHT` should be provided when the DB is empty")
         .to_u64()
-        .expect("height should be positive");
-
-    // We start reindexing 1000 blocks before the latest block height in the DB.
-    if latest_block_height < 1000 {
-        Ok(0)
-    } else {
-        Ok(latest_block_height - 1000)
-    }
+        .expect("height should be positive")
+        // We start 1000 blocks before the latest block in the DB to be sure we haven't missed anything
+        .saturating_sub(1000))
 }
 
 // Generates `($1, $2), ($3, $4)`
