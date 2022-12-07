@@ -4,7 +4,7 @@ use bigdecimal::BigDecimal;
 use futures::future::try_join_all;
 use near_lake_framework::near_indexer_primitives::views::ExecutionStatusView;
 
-use num_traits::{ToPrimitive, Zero};
+use num_traits::ToPrimitive;
 use sqlx::{Arguments, Row};
 
 pub(crate) use indexer_balances::FieldCount;
@@ -61,7 +61,7 @@ async fn insert_retry_or_panic<T: SqlxMethods + std::fmt::Debug>(
             Ok(_) => break,
             Err(async_error) => {
                 tracing::error!(
-                         target: crate::INDEXER,
+                         target: crate::LOGGING_PREFIX,
                          "Error occurred during {}:\n{} were not stored. \n{:#?} \n Retrying in {} milliseconds...",
                          async_error,
                          &T::name(),
@@ -106,7 +106,7 @@ pub async fn select_retry_or_panic(
             Err(async_error) => {
                 // todo we print here select with non-filled placeholders. It would be better to get the final select statement here
                 tracing::error!(
-                         target: crate::INDEXER,
+                         target: crate::LOGGING_PREFIX,
                          "Error occurred during {}:\nFailed SELECT:\n{}\n Retrying in {} milliseconds...",
                          async_error,
                     query,
@@ -125,17 +125,19 @@ pub(crate) async fn start_after_interruption(
     pool: &sqlx::Pool<sqlx::Postgres>,
 ) -> anyhow::Result<u64> {
     let query = "SELECT block_height
-                        FROM blocks
+                        FROM near_balance_events
                         ORDER BY block_timestamp desc
                         LIMIT 1";
 
     let res = select_retry_or_panic(pool, query, &[], 10).await?;
     Ok(res
         .first()
-        .map(|value| value.get(0))
-        .unwrap_or_else(BigDecimal::zero)
+        .map(|value| value.get::<BigDecimal, _>(0))
+        .expect("`START_BLOCK_HEIGHT` should be provided when the DB is empty")
         .to_u64()
-        .expect("height should be positive"))
+        .expect("height should be positive")
+        // We start 1000 blocks before the latest block in the DB to be sure we haven't missed anything
+        .saturating_sub(1000))
 }
 
 // Generates `($1, $2), ($3, $4)`

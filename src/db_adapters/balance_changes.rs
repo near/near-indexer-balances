@@ -605,7 +605,7 @@ async fn get_balance_retriable(
             Ok(res) => return Ok(res),
             Err(err) => {
                 tracing::error!(
-                    target: crate::INDEXER,
+                    target: crate::LOGGING_PREFIX,
                     "Failed to request account view details from RPC for account {}, block_hash {}.{}\n Retrying in {} milliseconds...",
                     account_id.to_string(),
                     block_hash.to_string(),

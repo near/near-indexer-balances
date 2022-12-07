@@ -1,18 +1,20 @@
 // // TODO cleanup imports in all the files in the end
 use cached::SizedCache;
 use clap::Parser;
+use configs::{init_tracing, Opts};
 use futures::StreamExt;
-
 use near_lake_framework::near_indexer_primitives;
 use tokio::sync::Mutex;
-use tracing_subscriber::EnvFilter;
 
 mod configs;
 mod db_adapters;
+mod metrics;
 mod models;
 
-// TODO naming
-pub(crate) const INDEXER: &str = "indexer";
+#[macro_use]
+extern crate lazy_static;
+
+pub(crate) const LOGGING_PREFIX: &str = "indexer_balances";
 
 const INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const MAX_DELAY_TIME: std::time::Duration = std::time::Duration::from_secs(120);
@@ -37,7 +39,9 @@ pub type BalanceCache =
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
-    let opts = crate::configs::Opts::parse();
+    let opts = Opts::parse();
+    let _worker_guard = init_tracing(opts.debug)?;
+
     let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
     // TODO Error: while executing migrations: error returned from database: 1128 (HY000): Function 'near_indexer.GET_LOCK' is not defined
     // sqlx::migrate!().run(&pool).await?;
@@ -46,52 +50,53 @@ async fn main() -> anyhow::Result<()> {
         Some(x) => x,
         None => models::start_after_interruption(&pool).await?,
     };
-    let config = near_lake_framework::LakeConfigBuilder::default()
-        .s3_bucket_name(opts.s3_bucket_name)
-        .s3_region_name(opts.s3_region_name)
-        .start_block_height(start_block_height)
-        .blocks_preload_pool_size(1000)
-        .build()?;
-    init_tracing();
+    tracing::info!(
+        target: LOGGING_PREFIX,
+        "Indexer will start from block {}",
+        start_block_height
+    );
 
-    let (lake_handle, stream) = near_lake_framework::streamer(config);
+    // create a lake configuration with S3 information passed in as ENV vars
+    let config = opts.to_lake_config(start_block_height).await;
+    let (_lake_handle, stream) = near_lake_framework::streamer(config);
 
     // We want to prevent unnecessary RPC queries to find previous balance
     let balances_cache: BalanceCache =
         std::sync::Arc::new(Mutex::new(SizedCache::with_size(100_000)));
 
     let json_rpc_client = near_jsonrpc_client::JsonRpcClient::connect(&opts.near_archival_rpc_url);
+    tokio::spawn(async move {
+        let mut handlers = tokio_stream::wrappers::ReceiverStream::new(stream)
+            .map(|streamer_message| {
+                handle_streamer_message(streamer_message, &pool, &balances_cache, &json_rpc_client)
+            })
+            .buffer_unordered(1usize);
 
-    let mut handlers = tokio_stream::wrappers::ReceiverStream::new(stream)
-        .map(|streamer_message| {
-            handle_streamer_message(streamer_message, &pool, &balances_cache, &json_rpc_client)
-        })
-        .buffer_unordered(1usize);
-
-    let mut time_now = std::time::Instant::now();
-    while let Some(handle_message) = handlers.next().await {
-        match handle_message {
-            Ok(block_height) => {
-                let elapsed = time_now.elapsed();
-                tracing::trace!(
-                    "Elapsed time spent on block {}: {:.3?}",
-                    block_height,
-                    elapsed
-                );
-                time_now = std::time::Instant::now();
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!(e));
+        let mut time_now = std::time::Instant::now();
+        while let Some(handle_message) = handlers.next().await {
+            match handle_message {
+                Ok(block_height) => {
+                    let elapsed = time_now.elapsed();
+                    tracing::info!(
+                        target: LOGGING_PREFIX,
+                        "Elapsed time spent on block {}: {:.3?}",
+                        block_height,
+                        elapsed
+                    );
+                    time_now = std::time::Instant::now();
+                }
+                Err(e) => {
+                    tracing::error!(target: LOGGING_PREFIX, "Stop indexing due to {}", e);
+                    // we do not catch this error anywhere, this thread is just stopped with error,
+                    // main thread continues serving metrics
+                    anyhow::bail!(e)
+                }
             }
         }
-    }
+        Ok(()) // unreachable statement, loop above is endless
+    });
 
-    // propagate errors from the Lake Framework
-    match lake_handle.await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e),
-        Err(e) => Err(anyhow::Error::from(e)), // JoinError
-    }
+    metrics::init_metrics_server(opts.port).await
 }
 
 async fn handle_streamer_message(
@@ -100,6 +105,11 @@ async fn handle_streamer_message(
     balances_cache: &BalanceCache,
     json_rpc_client: &near_jsonrpc_client::JsonRpcClient,
 ) -> anyhow::Result<u64> {
+    metrics::BLOCK_PROCESSED_TOTAL.inc();
+    // Prometheus Gauge Metric type do not support u64
+    // https://github.com/tikv/rust-prometheus/issues/470
+    metrics::LATEST_BLOCK_HEIGHT.set(i64::try_from(streamer_message.block.header.height)?);
+
     db_adapters::balance_changes::store_balance_changes(
         pool,
         &streamer_message.shards,
@@ -110,27 +120,4 @@ async fn handle_streamer_message(
     .await?;
 
     Ok(streamer_message.block.header.height)
-}
-
-fn init_tracing() {
-    let mut env_filter = EnvFilter::new("near_lake_framework=info");
-
-    if let Ok(rust_log) = std::env::var("RUST_LOG") {
-        if !rust_log.is_empty() {
-            for directive in rust_log.split(',').filter_map(|s| match s.parse() {
-                Ok(directive) => Some(directive),
-                Err(err) => {
-                    eprintln!("Ignoring directive `{}`: {}", s, err);
-                    None
-                }
-            }) {
-                env_filter = env_filter.add_directive(directive);
-            }
-        }
-    }
-
-    tracing_subscriber::fmt::Subscriber::builder()
-        .with_env_filter(env_filter)
-        .with_writer(std::io::stderr)
-        .init();
 }
