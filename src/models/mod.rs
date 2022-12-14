@@ -124,10 +124,7 @@ pub async fn select_retry_or_panic(
 pub(crate) async fn start_after_interruption(
     pool: &sqlx::Pool<sqlx::Postgres>,
 ) -> anyhow::Result<u64> {
-    let query = "SELECT block_height
-                        FROM near_balance_events
-                        ORDER BY block_timestamp desc
-                        LIMIT 1";
+    let query = "SELECT max(block_height) FROM near_balance_events";
 
     let res = select_retry_or_panic(pool, query, &[], 10).await?;
     Ok(res
